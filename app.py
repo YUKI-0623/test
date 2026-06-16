@@ -15,26 +15,21 @@ def get_race_data():
 df = get_race_data()
 
 st.subheader("🛠 予想の微調整")
-# 適性の影響を「調整幅」として扱います
 w1 = st.slider("馬場適性の影響度", 0.0, 5.0, 2.0)
 w2 = st.slider("血統スタミナの影響度", 0.0, 5.0, 2.0)
 base_time = st.slider("ベースタイム(秒)", 130.0, 150.0, 138.0)
 
-if st.button("🚀 全18頭で予想を実行"):
-    # 【改善点】タイムの計算式を現実的な範囲に修正
-    # 能力値が高いほどタイムを縮める（引き算する）が、その幅を抑える
-    # 基礎タイム(138.0)から、適性合計(最大3.0程度)×係数(2.0)を引く形
+if st.button("🚀 予想を実行"):
+    # タイム計算（現実的な範囲に収める係数）
     df['予測秒'] = base_time - (df['馬場適性'] * w1) - (df['血統スタミナ'] * w2) - (df['騎手補正'] * 1.5)
     
     result = df.sort_values(by='予測秒').reset_index(drop=True)
     result['着順'] = result.index + 1
-    
-    # 秒から「分:秒」への変換
     result['予想タイム'] = result['予測秒'].apply(lambda x: f"{int(x//60)}:{x%60:.2f}")
     
-    # グラフ表示：上位と下位のタイム差を明確にする
+    # グラフ表示：能力差を可視化（最大値との差をバーにする）
     result['能力スコア'] = result['予測秒'].max() - result['予測秒']
     st.bar_chart(result.set_index('馬名')['能力スコア'])
     
+    # 結果テーブル
     st.table(result[['着順', '馬名', '予想タイム']])
-    st.balloons()

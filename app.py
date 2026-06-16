@@ -4,7 +4,6 @@ import pandas as pd
 st.set_page_config(page_title="UmAI 競馬予想アプリ 2026", layout="wide")
 st.title("🏇 UmAI 競馬シミュレーター 2026")
 
-# 1. 全18頭のデータ
 def get_race_data():
     return pd.DataFrame({
         '馬名': ['ダノンデサイル', 'ミュージアムマイル', 'コスモキュランダ', 'ジューンテイク', 'クロワデュノール', 'ビザンチンドリーム', 'レガレイラ', 'スティンガーグラス', 'シュガークン', 'ミクニインスパイア', 'シンエンペラー', 'マイユニバース', 'ミステリーウェイ', 'ファミリータイム', 'シェイクユアハート', 'メイショウタバル', 'マイネルエンペラー', 'タガノデュード'],
@@ -16,22 +15,26 @@ def get_race_data():
 df = get_race_data()
 
 st.subheader("🛠 予想の微調整")
-w1 = st.slider("馬場適性の重要度", 0.0, 2.0, 1.0)
-w2 = st.slider("血統スタミナの重要度", 0.0, 2.0, 1.0)
-base_time = st.slider("ベースタイム(秒)", 120.0, 140.0, 130.0)
+# 適性の影響を「調整幅」として扱います
+w1 = st.slider("馬場適性の影響度", 0.0, 5.0, 2.0)
+w2 = st.slider("血統スタミナの影響度", 0.0, 5.0, 2.0)
+base_time = st.slider("ベースタイム(秒)", 130.0, 150.0, 138.0)
 
 if st.button("🚀 全18頭で予想を実行"):
-    # 補正を強めにかけて差を出す
-    df['計算スコア'] = (df['馬場適性'] * w1 * 5) + (df['血統スタミナ'] * w2 * 5) + (df['騎手補正'] * 3)
-    df['秒'] = base_time - df['計算スコア']
+    # 【改善点】タイムの計算式を現実的な範囲に修正
+    # 能力値が高いほどタイムを縮める（引き算する）が、その幅を抑える
+    # 基礎タイム(138.0)から、適性合計(最大3.0程度)×係数(2.0)を引く形
+    df['予測秒'] = base_time - (df['馬場適性'] * w1) - (df['血統スタミナ'] * w2) - (df['騎手補正'] * 1.5)
     
-    result = df.sort_values(by='秒').reset_index(drop=True)
+    result = df.sort_values(by='予測秒').reset_index(drop=True)
     result['着順'] = result.index + 1
-    result['予想タイム'] = result['秒'].apply(lambda x: f"{int(x//60)}:{x%60:.3f}")
     
-    # グラフ表示の工夫: 最も遅い馬との「タイム差」を表示してバーの長さを可視化
-    result['能力差グラフ'] = result['秒'].max() - result['秒']
-    st.bar_chart(result.set_index('馬名')['能力差グラフ'])
+    # 秒から「分:秒」への変換
+    result['予想タイム'] = result['予測秒'].apply(lambda x: f"{int(x//60)}:{x%60:.2f}")
+    
+    # グラフ表示：上位と下位のタイム差を明確にする
+    result['能力スコア'] = result['予測秒'].max() - result['予測秒']
+    st.bar_chart(result.set_index('馬名')['能力スコア'])
     
     st.table(result[['着順', '馬名', '予想タイム']])
     st.balloons()

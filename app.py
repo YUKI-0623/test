@@ -1,9 +1,9 @@
-%%writefile app.py
 import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="UmAI 競馬予想アプリ", layout="wide")
 st.title("🏇 UmAI 競馬シミュレーター")
+st.write("ボタンを押すと、最新ロジックでリアルタイム予想を行います！")
 
 data = {
     '馬名': ['レーベンスティール', 'ロングラン', 'オフトレイル', 'シックスペンス', 'ステレンボッシュ', 'トロヴァトーレ'],
@@ -14,7 +14,7 @@ data = {
 }
 df = pd.DataFrame(data)
 
-st.sidebar.header("設定")
+st.sidebar.header("シミュレーション設定")
 base_time = st.sidebar.slider("ベースタイム(秒)", 90.0, 95.0, 92.07)
 weight = st.sidebar.slider("適性の重要度", 0.1, 1.0, 0.6)
 
@@ -23,4 +23,12 @@ if st.button("🚀 安田記念 予想を実行"):
     df_result = df.sort_values(by='秒').reset_index(drop=True)
     df_result['予測着順'] = df_result.index + 1
     df_result['予想タイム'] = df_result['秒'].apply(lambda x: f"{int(x//60)}:{x%60:.3f}")
+    
+    st.success("予想完了！")
     st.table(df_result[['予測着順', '馬名', '騎手', '予想タイム']])
+    
+    df_result['グラフ用タイム'] = df_result['秒'].max() - df_result['秒']
+    st.bar_chart(df_result.set_index('馬名')['グラフ用タイム'])
+
+st.write("---")
+st.caption("※このアプリはテスト版です。")

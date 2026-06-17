@@ -56,7 +56,7 @@ lap_summary = {
 }
 
 # ==========================================
-# 2. スクレイピングエンジン
+# 2. スクレイピングエンジン（安全弁を取り付けた防御型）
 # ==========================================
 def fetch_live_race_data(date_str, place_code, race_num):
     list_url = f"https://race.netkeiba.com/top/race_list.html?kaisaibi={date_str}"
@@ -78,7 +78,9 @@ def fetch_live_race_data(date_str, place_code, race_num):
                     break
         
         if not race_id:
-            race_id = f"2026{place_code}0101{int(race_num):02d}"
+            # 2026年をベースにしたデフォルトIDの生成
+            this_year = datetime.now().year
+            race_id = f"{this_year}{place_code}0101{int(race_num):02d}"
             
         shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}&mode=blood"
         res_s = requests.get(shutuba_url, headers=headers, timeout=5)
@@ -87,27 +89,53 @@ def fetch_live_race_data(date_str, place_code, race_num):
         
         table = soup_s.find("table", class_="Shutuba_Table")
         if not table:
-            return None, "レースデータが見つかりません。日付や競馬場、レース番号が正しいか確認してください。"
+            return None, "⚠️ まだ出馬表が作成されていないか、レースが存在しません。過去の確定レースの日付（土日）を選ぶか、枠順確定までお待ちください。"
             
         rows = table.find_all("tr", class_="HorseList")
+        if not rows:
+            return None, "⚠️ 出馬表の枠組みはありますが、まだ出走馬が登録されていません。"
+            
         scraped_data = []
         
         for row in rows:
+            # 【安全対策1】枠番の取得（なければ1）
             waku_td = row.find("td", class_=re.compile(r'waku\d'))
-            waku = int(re.search(r'waku(\d)', waku_td['class'][0]).group(1)) if waku_td else 1
-            umaban = int(row.find("td", class_="Umaban").text.strip())
-            name = row.find("span", class_="HorseName").text.strip()
+            waku = 1
+            if waku_td and 'class' in waku_td.attrs and waku_td['class']:
+                waku_match = re.search(r'waku(\d)', waku_td['class'][0])
+                if waku_match:
+                    waku = int(waku_match.group(1))
             
-            jockey_raw = row.find("td", class_="Jockey").text.strip()
-            jockey = re.sub(r'\d|▲|△|☆|★|◇|◇', '', jockey_raw).strip()
+            # 【安全対策2】馬番の取得（まだなければ0）
+            umaban_td = row.find("td", class_="Umaban")
+            umaban = 0
+            if umaban_td and umaban_td.text.strip().isdigit():
+                umaban = int(umaban_td.text.strip())
             
+            # 【安全対策3】馬名の取得（これが取れない行はデータとして成立しないので飛ばす）
+            name_span = row.find("span", class_="HorseName")
+            if not name_span:
+                continue
+            name = name_span.text.strip()
+            
+            # 【安全対策4】騎手名の取得（まだ未定なら「未定」にする）
+            jockey_td = row.find("td", class_="Jockey")
+            jockey = "未定"
+            if jockey_td and jockey_td.text.strip():
+                jockey_raw = jockey_td.text.strip()
+                jockey = re.sub(r'\d|▲|△|☆|★|◇|◇', '', jockey_raw).strip()
+            
+            # 【安全対策5】単勝オッズの取得（まだなければ10.0）
             odds_td = row.find("td", class_="Odds")
-            odds_text = odds_td.text.strip() if odds_td else "10.0"
-            try:
-                odds = float(odds_text) if "." in odds_text else 10.0
-            except:
-                odds = 50.0
+            odds = 10.0
+            if odds_td and odds_td.text.strip():
+                odds_text = odds_td.text.strip()
+                try:
+                    odds = float(odds_text) if "." in odds_text else 10.0
+                except:
+                    odds = 50.0
                 
+            # 【安全対策6】父馬の取得
             sire_link = row.find("a", href=re.compile(r'/sire/'))
             sire_name = sire_link.text.strip() if sire_link else "不明"
             
@@ -125,30 +153,32 @@ def fetch_live_race_data(date_str, place_code, race_num):
                 '騎手': jockey, '単勝': odds, '泥適性': spec['泥'], 'スタミナ': spec['スタミナ'], '騎手実績スコア': j_score
             })
             
+        if not scraped_data:
+            return None, "⚠️ 出走馬の情報が正しく読み込めませんでした（枠順確定前の可能性があります）。"
+            
         return pd.DataFrame(scraped_data), f"🟢 【成功】全 {len(scraped_data)} 頭のデータをリアルタイム取得しました！"
         
     except Exception as e:
-        return None, f"❌ エラーが発生しました: {str(e)}"
+        return None, f"❌ 予期せぬ読み込みエラーが発生しました: {str(e)}"
 
 # ==========================================
-# 3. 画面UI（条件指定・新スライダー）
+# 3. 画面UI（条件指定）
 # ==========================================
 with st.sidebar:
     st.header("📅 レース条件の指定")
+    # テスト時は、すでに結果が確定している過去の「土日の日付」を入力すると100%動きます！
     tgt_date = st.date_input("開催日を選択", datetime(2026, 6, 21))
     tgt_place = st.selectbox("競馬場を選択", list(PLACE_MAP.keys()), index=7)
     tgt_race = st.selectbox("レース番号", [f"{i}R" for i in range(1, 13)], index=10)
     
     st.header("🛠 1. 馬場と展開の設定")
     
-    # 【大幅改良】良馬場〜不良馬場を段階的に選べるスライダー機能
     track_condition = st.select_slider(
         "馬場状態を選択",
         options=["良馬場", "稍重", "重馬場", "不良馬場"],
         value="良馬場"
     )
     
-    # 馬場状態に応じて、内部の泥影響度（ペナルティ値）を自動マッピング
     track_mud_map = {"良馬場": 0.0, "稍重": 3.0, "重馬場": 6.5, "不良馬場": 10.0}
     mud_val = track_mud_map[track_condition]
     
@@ -179,7 +209,7 @@ if df_live is not None:
     # オッズから基礎実力を算出
     df['基礎実力秒'] = base_val + (df['単勝'].apply(lambda x: 0.1 if x < 2.0 else (0.5 if x < 5.0 else (1.5 if x < 15.0 else 3.0))))
     
-    # 選択された馬場状態（mud_val）を組み込んだ計算式
+    # 計算式
     df['予測秒'] = (
         df['基礎実力秒']
         + (mud_val * (1.1 - df['泥適性'])) 
@@ -206,5 +236,4 @@ if df_live is not None:
         st.subheader(f"📊 {tgt_date.year}年 {tgt_place} {tgt_race} 予想ランキング")
         st.table(result[['着順', '枠番', '馬番', '馬名', '父馬', '系統', '騎手', '単勝', '予想タイム']])
 else:
-    st.error(status)
-    st.info("💡 開催日（土日など）と、その日にレースがある競馬場・レース番号を左側で正しく選択してください。")
+    st.warning(status)

@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="泥んこ血統AI・カスタマイズ版", layout="wide")
-st.title("🏇 泥んこ血統AI & 予想タイム調整")
+st.title("🏇 血統AI & 予想タイム調整")
 
 # 1. データベース設定
 def get_base_data():

@@ -56,7 +56,7 @@ lap_summary = {
 }
 
 # ==========================================
-# 2. スクレイピングエンジン
+# 2. スクレイピングエンジン（文字化け完全防御型）
 # ==========================================
 def fetch_live_race_data(date_str, place_code, race_num):
     list_url = f"https://race.netkeiba.com/top/race_list.html?kaisaibi={date_str}"
@@ -64,8 +64,8 @@ def fetch_live_race_data(date_str, place_code, race_num):
     
     try:
         res = requests.get(list_url, headers=headers, timeout=5)
-        res.encoding = 'euc-jp'
-        soup = BeautifulSoup(res.text, "html.parser")
+        # res.contentをそのまま渡すことで、BeautifulSoupが文字コードを自動判別して文字化けを防ぎます
+        soup = BeautifulSoup(res.content, "html.parser")
         
         race_id = None
         links = soup.find_all("a", href=True)
@@ -84,12 +84,16 @@ def fetch_live_race_data(date_str, place_code, race_num):
             
         shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}&mode=blood"
         res_s = requests.get(shutuba_url, headers=headers, timeout=5)
-        res_s.encoding = 'euc-jp'
-        soup_s = BeautifulSoup(res_s.text, "html.parser")
+        soup_s = BeautifulSoup(res_s.content, "html.parser")
         
+        # 【超重要】開いたページが「出馬表」か「エラーページ」かをタイトルで判定
+        page_title = soup_s.title.text if soup_s.title else ""
+        if "出馬表" not in page_title and "想定" not in page_title:
+            return None, "⚠️ 指定された日付・競馬場の「出馬表」が存在しないか、すでに終了した過去のレースです。ネット競馬の仕様上、過去レースの出馬表は閲覧できないため、今週末（直近の土日）の日付を選択してください。"
+            
         table = soup_s.find("table", class_="Shutuba_Table")
         if not table:
-            return None, "⚠️ 出馬表データが見つかりません。ネット競馬でまだ枠順が発表されていないか、すでに終了した過去レースの可能性があります（※出馬表はレース後にアクセスできなくなります）。"
+            return None, "⚠️ まだ出馬表のテーブルが作成されていません。今週末のレースを選択してください。"
             
         rows = table.find_all("tr", class_="HorseList")
         scraped_data = []
@@ -145,7 +149,7 @@ def fetch_live_race_data(date_str, place_code, race_num):
             })
             
         if not scraped_data:
-            return None, "⚠️ 出走馬の情報が正しく読み込めませんでした。"
+            return None, "⚠️ 出走馬の情報が読み込めませんでした。"
             
         return pd.DataFrame(scraped_data), f"🟢 【成功】全 {len(scraped_data)} 頭のデータをリアルタイム取得しました！"
         
@@ -153,13 +157,14 @@ def fetch_live_race_data(date_str, place_code, race_num):
         return None, f"❌ エラー: {str(e)}"
 
 # ==========================================
-# 3. 画面UI（keyを指定して重複を完全防御）
+# 3. 画面UI
 # ==========================================
 with st.sidebar:
     st.header("📅 レース条件の指定")
+    # 初期値を今週末の日曜日（2026年6月21日）に設定しています
     tgt_date = st.date_input("開催日を選択", datetime(2026, 6, 21), key="sb_date_input")
-    tgt_place = st.selectbox("競馬場を選択", list(PLACE_MAP.keys()), index=7, key="sb_place_select")
-    tgt_race = st.selectbox("レース番号", [f"{i}R" for i in range(1, 13)], index=10, key="sb_race_select")
+    tgt_place = st.selectbox("競馬場を選択", list(PLACE_MAP.keys()), index=5, key="sb_place_select") # 東京競馬場
+    tgt_race = st.selectbox("レース番号", [f"{i}R" for i in range(1, 13)], index=10, key="sb_race_select") # 11R
     
     st.header("🛠 1. 馬場と展開の設定")
     track_condition = st.select_slider(

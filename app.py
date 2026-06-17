@@ -7,7 +7,7 @@ from datetime import datetime
 
 # 画面全体の基本設定
 st.set_page_config(page_title="リアルタイム血統スクレイピング予想", layout="wide")
-st.title("🏇 リアルタイム血統スクレイピング × 展開シミュレーター")
+st.title("🏇 穴の菊沢で夢のマイホーム × 展開シミュレーター")
 st.caption("【完全自律型】ネット競馬からリアルタイム取得し、独自の数式で完結するシステム")
 st.markdown("---")
 

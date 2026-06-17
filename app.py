@@ -3,163 +3,208 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import re
+from datetime import datetime
 
 # 画面全体の基本設定
-st.set_page_config(page_title="泥んこ血統AI・ネット競馬リアル完全版", layout="wide")
-st.title("🏇 泥んこ血統AI × ネット競馬リアル連動シミュレーター")
-st.caption("【完全版】2026年宝塚記念の実名・リアルオッズ・4大データ統合システム")
+st.set_page_config(page_title="リアルタイム血統スクレイピング予想", layout="wide")
+st.title("🏇 リアルタイム血統スクレイピング × 展開シミュレーター")
+st.caption("【完全自律型】ネット競馬からリアルタイム取得し、独自の数式で完結するシステム")
 st.markdown("---")
 
 # ==========================================
-# 1. 2026年宝塚記念の「100%正確な確定リアルデータベース」
-#    (スクレイピングがブロックされた場合の鉄壁のバックアップ)
+# 1. データベース定義（血統系統 ＆ 主要騎手スコア）
 # ==========================================
-REAL_RACE_DATA = {
-    1:  {'馬名': 'ダノンデサイル', '枠番': 1, '騎手': '戸崎圭太', '単勝': 7.0, '系統': 'ロベルト系', '泥適性': 0.85, 'スタミナ': 0.90, '同コース': 0.95, '同距離': 0.90, '騎手スコア': 0.90},
-    2:  {'馬名': 'ミュージアムマイル', '枠番': 1, '騎手': 'D.レーン', '単勝': 7.1, '系統': 'キングカメハメハ系', '泥適性': 0.60, 'スタミナ': 0.75, '同コース': 0.65, '同距離': 0.70, '騎手スコア': 0.95},
-    3:  {'馬名': 'シュガークン', '枠番': 2, '騎手': '吉村誠之助', '単勝': 250.2, '系統': 'キングカメハメハ系', '泥適性': 0.65, 'スタミナ': 0.80, '同コース': 0.70, '同距離': 0.75, '騎手スコア': 0.65},
-    4:  {'馬名': 'ミクニインスパイア', '枠番': 2, '騎手': '丹内祐次', '単勝': 56.1, '系統': 'ロベルト系', '泥適性': 0.75, 'スタミナ': 0.70, '同コース': 0.60, '同距離': 0.65, '騎手スコア': 0.75},
-    5:  {'馬名': 'クロワデュノール', '枠番': 3, '騎手': '北村友一', '単勝': 2.5, '系統': 'ブラックタイド系', '泥適性': 0.75, 'スタミナ': 0.95, '同コース': 0.90, '同距離': 0.90, '騎手スコア': 0.85},
-    6:  {'馬名': 'ビザンチンドリーム', '枠番': 3, '騎手': '西村淳也', '単勝': 29.6, '系統': 'ロベルト系', '泥適性': 0.80, 'スタミナ': 0.80, '同コース': 0.75, '同距離': 0.80, '騎手スコア': 0.80},
-    7:  {'馬名': 'ファミリータイム', '枠番': 4, '騎手': '幸英明', '単勝': 287.4, '系統': 'ディープ系', '泥適性': 0.55, 'スタミナ': 0.70, '同コース': 0.60, '同距離': 0.65, '騎手スコア': 0.70},
-    8:  {'馬名': 'タガノデュード', '枠番': 4, '騎手': '高杉吏麒', '単勝': 58.8, '系統': 'スプリント・パワー系', '泥適性': 0.70, 'スタミナ': 0.65, '同コース': 0.65, '同距離': 0.60, '騎手スコア': 0.70},
-    9:  {'馬名': 'コスモキュランダ', '枠番': 5, '騎手': '横山武史', '単勝': 41.6, '系統': 'ディープ系（タフ型）', '泥適性': 0.80, 'スタミナ': 0.85, '同コース': 0.85, '同距離': 0.85, '騎手スコア': 0.85},
-    10: {'馬名': 'ジューンテイク', '枠番': 5, '騎手': '松山弘平', '単勝': 222.6, '系統': 'ディープ系', '泥適性': 0.60, 'スタミナ': 0.75, '同コース': 0.70, '同距離': 0.70, '騎手スコア': 0.85},
-    11: {'馬名': 'シンエンペラー', '枠番': 6, '騎手': '坂井瑠星', '単勝': 85.0, '系統': '欧州系', '泥適性': 0.85, 'スタミナ': 0.90, '同コース': 0.85, '同距離': 0.85, '騎手スコア': 0.90},
-    12: {'馬名': 'マイネルエンペラー', '枠番': 6, '騎手': '川田将雅', '単勝': 121.0, '系統': 'ステイゴールド系', '泥適性': 0.90, 'スタミナ': 0.90, '同コース': 0.80, '同距離': 0.85, '騎手スコア': 0.95},
-    13: {'馬名': 'シェイクユアハート', '枠番': 7, '騎手': '古川吉洋', '単勝': 84.0, '系統': 'ハーツクライ系', '泥適性': 0.65, 'スタミナ': 0.80, '同コース': 0.75, '同距離': 0.75, '騎手スコア': 0.70},
-    14: {'馬名': 'スティンガーグラス', '枠番': 7, '騎手': '岩田望来', '単勝': 151.6, '系統': 'ディープ系', '泥適性': 0.60, 'スタミナ': 0.75, '同コース': 0.70, '同距離': 0.75, '騎手スコア': 0.80},
-    15: {'馬名': 'マイユニバース', '枠番': 7, '騎手': '横山典弘', '単勝': 19.1, '系統': 'ダート・パワー系', '泥適性': 0.85, 'スタミナ': 0.70, '同コース': 0.60, '同距離': 0.60, '騎手スコア': 0.90},
-    16: {'馬名': 'メイショウタバル', '枠番': 8, '騎手': '武豊', '単勝': 3.9, '系統': 'ステイゴールド系', '泥適性': 1.00, 'スタミナ': 0.95, '同コース': 0.95, '同距離': 0.95, '騎手スコア': 0.98},
-    17: {'馬名': 'レガレイラ', '枠番': 8, '騎手': 'C.ルメール', '単勝': 7.8, '系統': 'ハーツクライ系', '泥適性': 0.65, 'スタミナ': 0.85, '同コース': 0.85, '同距離': 0.80, '騎手スコア': 0.98},
-    18: {'馬名': 'ミステリーウェイ', '枠番': 8, '騎手': '松本大輝', '単勝': 229.4, '系統': 'ハーツクライ系', '泥適性': 0.60, 'スタミナ': 0.75, '同コース': 0.65, '同距離': 0.70, '騎手スコア': 0.65}
+SIRE_MAP = {
+    'ゴールドシップ': 'ステイゴールド系', 'オルフェーヴル': 'ステイゴールド系', 'ステイゴールド': 'ステイゴールド系',
+    'エピファネイア': 'ロベルト系', 'モーリス': 'ロベルト系', 'スクリーンヒーロー': 'ロベルト系',
+    'キタサンブラック': 'ブラックタイド系', 'ブラックタイド': 'ブラックタイド系',
+    'ドゥラメンテ': 'キングカメハメハ系', 'ロードカナロア': 'キングカメハメハ系', 'キングカメハメハ': 'キングカメハメハ系', 'リオンディーズ': 'キングカメハメハ系',
+    'キズナ': 'ディープ系', 'ディープインパクト': 'ディープ系', 'コントレイル': 'ディープ系',
+    'スワーヴリチャード': 'ハーツクライ系', 'ハーツクライ': 'ハーツクライ系', 'ジャスタウェイ': 'ハーツクライ系',
+    'アルアイン': 'ディープ系（タフ型）', 'リアルスティール': 'ディープ系（タフ型）',
+    'Siyouni': '欧州系', 'New Approach': '欧州系', 'Frankel': '欧州系',
 }
 
-# 過去5年のラップ定数
+BLOOD_SPEC = {
+    'ステイゴールド系': {'泥': 0.95, 'スタミナ': 0.95},
+    '欧州系': {'泥': 0.90, 'スタミナ': 0.90},
+    'ロベルト系': {'泥': 0.85, 'スタミナ': 0.85},
+    'ディープ系（タフ型）': {'泥': 0.80, 'スタミナ': 0.80},
+    'ブラックタイド系': {'泥': 0.75, 'スタミナ': 0.90},
+    'キングカメハメハ系': {'泥': 0.65, 'スタミナ': 0.75},
+    'ディープ系': {'泥': 0.60, 'スタミナ': 0.75},
+    'ハーツクライ系': {'泥': 0.65, 'スタミナ': 0.85},
+    'その他': {'泥': 0.65, 'スタミナ': 0.70}
+}
+
+JOCKEY_MAP = {
+    'ルメール': 0.98, '川田': 0.95, '武豊': 0.95, '戸崎': 0.90, '坂井': 0.90,
+    '横山武': 0.88, '松山': 0.85, 'レーン': 0.95, 'モレイラ': 0.98, 'デムーロ': 0.85
+}
+
+PLACE_MAP = {
+    "札幌": "01", "函館": "02", "福島": "03", "新潟": "04",
+    "東京": "05", "中山": "06", "中京": "07", "京都": "08",
+    "阪神": "09", "小倉": "10"
+}
+
 lap_summary = {
-    'ハイペース（2022年型:タイトルホルダー）': {'前半3F': 33.9, '後半3F': 36.3, '展開特徴': 'タフな持久力勝負。血統スタミナが極めて重要。'},
-    'ミドルペース（2023年型:イクイノックス）': {'前半3F': 34.6, '後半3F': 35.5, '展開特徴': '実力通りに決まる平均決着。総合力が問われる。'},
-    'スローペース（2021年型:クロノジェネシス）': {'前半3F': 35.2, '後半3F': 34.4, '展開特徴': '直線のスピード瞬発力勝負。騎手の手腕やキレが重視。'},
-    '道悪タフペース（2024年型:ブローザホーン）': {'前半3F': 34.5, '後半3F': 36.6, '展開特徴': '重馬場の消耗戦。泥適性とスタミナがないと全滅。'}
+    'ミドルペース（標準・総合力勝負）': {'前半3F': 34.6, '後半3F': 35.5, 'スタミナ重み': 2.0, '騎手重み': 1.5},
+    'ハイペース（持久力・タフ決着）': {'前半3F': 33.9, '後半3F': 36.3, 'スタミナ重み': 3.5, '騎手重み': 1.0},
+    'スローペース（直線瞬発力・キレ勝負）': {'前半3F': 35.2, '後半3F': 34.4, 'スタミナ重み': 1.0, '騎手重み': 2.5},
+    '道悪タフペース（重馬場の消耗戦）': {'前半3F': 34.5, '後半3F': 36.6, 'スタミナ重み': 4.0, '騎手重み': 1.5}
 }
 
 # ==========================================
-# 2. netkeiba からデータを取得する関数（エラー防止の鉄壁仕様）
+# 2. スクレイピングエンジン
 # ==========================================
-@st.cache_data(ttl=600)  # 10分間キャッシュして速度向上
-def fetch_netkeiba_data():
-    race_id = "202609030411"  # 2026年宝塚記念の正規レースID
-    url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+def fetch_live_race_data(date_str, place_code, race_num):
+    list_url = f"https://race.netkeiba.com/top/race_list.html?kaisaibi={date_str}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     try:
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(list_url, headers=headers, timeout=5)
         res.encoding = 'euc-jp'
+        soup = BeautifulSoup(res.text, "html.parser")
         
-        if res.status_code == 200 and "Shutuba_Table" in res.text:
-            soup = BeautifulSoup(res.text, "html.parser")
-            table = soup.find("table", class_="Shutuba_Table")
-            rows = table.find_all("tr", class_="HorseList")
+        race_id = None
+        links = soup.find_all("a", href=True)
+        for link in links:
+            href = link['href']
+            if "race_id=" in href and (f"03{place_code}" in href or f"2026{place_code}" in href):
+                target_id = re.search(r'race_id=(\d+)', href).group(1)
+                if int(target_id[-2:]) == int(race_num):
+                    race_id = target_id
+                    break
+        
+        if not race_id:
+            race_id = f"2026{place_code}0101{int(race_num):02d}"
             
-            scraped_data = []
-            for row in rows:
-                umaban = int(row.find("td", class_="Umaban").text.strip())
-                name = row.find("span", class_="HorseName").text.strip()
-                jockey = row.find("td", class_="Jockey").text.strip()
-                jockey = re.sub(r'\d|▲|△|☆|★|◇|◇', '', jockey).strip() # 減量記号などを除去
-                
-                # 基本的な特性をリアルデータベースからマッピング
-                base_info = REAL_RACE_DATA.get(umaban, {'枠番':1,'単勝':10.0,'系統':'その他','泥適性':0.5,'スタミナ':0.5,'同コース':0.5,'同距離':0.5,'騎手スコア':0.5})
-                
-                scraped_data.append({
-                    '馬番': umaban, '枠番': base_info['枠番'], '馬名': name, '騎手': jockey, '単勝': base_info['単勝'],
-                    '系統': base_info['系統'], '泥適性': base_info['泥適性'], 'スタミナ': base_info['スタミナ'],
-                    '同コース適性': base_info['同コース'], '同距離適性': base_info['同距離'], '騎手実績スコア': base_info['騎手スコア']
-                })
+        shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}&mode=blood"
+        res_s = requests.get(shutuba_url, headers=headers, timeout=5)
+        res_s.encoding = 'euc-jp'
+        soup_s = BeautifulSoup(res_s.text, "html.parser")
+        
+        table = soup_s.find("table", class_="Shutuba_Table")
+        if not table:
+            return None, "レースデータが見つかりません。日付や競馬場、レース番号が正しいか確認してください。"
             
-            if len(scraped_data) == 18:
-                return pd.DataFrame(scraped_data), "🟢 netkeibaから最新の出走馬データをリアルタイム取得しました！"
+        rows = table.find_all("tr", class_="HorseList")
+        scraped_data = []
+        
+        for row in rows:
+            waku_td = row.find("td", class_=re.compile(r'waku\d'))
+            waku = int(re.search(r'waku(\d)', waku_td['class'][0]).group(1)) if waku_td else 1
+            umaban = int(row.find("td", class_="Umaban").text.strip())
+            name = row.find("span", class_="HorseName").text.strip()
+            
+            jockey_raw = row.find("td", class_="Jockey").text.strip()
+            jockey = re.sub(r'\d|▲|△|☆|★|◇|◇', '', jockey_raw).strip()
+            
+            odds_td = row.find("td", class_="Odds")
+            odds_text = odds_td.text.strip() if odds_td else "10.0"
+            try:
+                odds = float(odds_text) if "." in odds_text else 10.0
+            except:
+                odds = 50.0
+                
+            sire_link = row.find("a", href=re.compile(r'/sire/'))
+            sire_name = sire_link.text.strip() if sire_link else "不明"
+            
+            system_name = SIRE_MAP.get(sire_name, 'その他')
+            spec = BLOOD_SPEC[system_name]
+            
+            j_score = 0.70
+            for k, v in JOCKEY_MAP.items():
+                if k in jockey:
+                    j_score = v
+                    break
+                    
+            scraped_data.append({
+                '枠番': waku, '馬番': umaban, '馬名': name, '父馬': sire_name, '系統': system_name,
+                '騎手': jockey, '単勝': odds, '泥適性': spec['泥'], 'スタミナ': spec['スタミナ'], '騎手実績スコア': j_score
+            })
+            
+        return pd.DataFrame(scraped_data), f"🟢 【成功】全 {len(scraped_data)} 頭のデータをリアルタイム取得しました！"
+        
     except Exception as e:
-        pass
+        return None, f"❌ エラーが発生しました: {str(e)}"
+
+# ==========================================
+# 3. 画面UI（条件指定・新スライダー）
+# ==========================================
+with st.sidebar:
+    st.header("📅 レース条件の指定")
+    tgt_date = st.date_input("開催日を選択", datetime(2026, 6, 21))
+    tgt_place = st.selectbox("競馬場を選択", list(PLACE_MAP.keys()), index=7)
+    tgt_race = st.selectbox("レース番号", [f"{i}R" for i in range(1, 13)], index=10)
     
-    # スクレイピング失敗時は、用意した100%正確な確定リアルデータを成形して返す
-    backup_list = []
-    for num, info in REAL_RACE_DATA.items():
-        backup_list.append({
-            '馬番': num, '枠番': info['枠番'], '馬名': info['馬名'], '騎手': info['騎手'], '単勝': info['単勝'],
-            '系統': info['系統'], '泥適性': info['泥適性'], 'スタミナ': info['スタミナ'],
-            '同コース適性': info['同コース'], '同距離適性': info['同距離'], '騎手実績スコア': info['騎手スコア']
-        })
-    return pd.DataFrame(backup_list), "⚠️ netkeiba通信制限のため、ローカルの2026年宝塚記念確定リアルデータをロードしました（メンバー完全一致）"
+    st.header("🛠 1. 馬場と展開の設定")
+    
+    # 【大幅改良】良馬場〜不良馬場を段階的に選べるスライダー機能
+    track_condition = st.select_slider(
+        "馬場状態を選択",
+        options=["良馬場", "稍重", "重馬場", "不良馬場"],
+        value="良馬場"
+    )
+    
+    # 馬場状態に応じて、内部の泥影響度（ペナルティ値）を自動マッピング
+    track_mud_map = {"良馬場": 0.0, "稍重": 3.0, "重馬場": 6.5, "不良馬場": 10.0}
+    mud_val = track_mud_map[track_condition]
+    
+    selected_pace = st.selectbox("想定するレース展開", list(lap_summary.keys()))
+    base_val = st.slider("ベースタイム（秒）", 70.0, 160.0, 135.0, help="1200mなら72秒、2200mなら135秒付近に調整してください")
+
+    st.header("📈 2. 独自の重み付け調整")
+    course_weight = st.slider("競馬場・コース適性の重要度", 0.0, 5.0, 2.0)
+    distance_weight = st.slider("距離実績の重要度", 0.0, 5.0, 2.0)
+    jockey_weight = st.slider("騎手手腕の重要度", 0.0, 5.0, 2.0)
 
 # ==========================================
-# 3. データの読み込みとUI構築
+# 4. データ取得と計算
 # ==========================================
-df_base, status_msg = fetch_netkeiba_data()
-st.success(status_msg)
+date_query = tgt_date.strftime("%Y%m%d")
+place_query = PLACE_MAP[tgt_place]
+race_query = tgt_race.replace("R", "")
 
-st.sidebar.header("🛠 1. 展開と馬場の設定")
-selected_pace = st.sidebar.selectbox("想定するレース展開（過去ラップ参考）", list(lap_summary.keys()))
-pace_info = lap_summary[selected_pace]
-st.sidebar.info(f"💡 {pace_info['展開特徴']}")
+df_live, status = fetch_live_race_data(date_query, place_query, race_query)
 
-mud_val = st.sidebar.slider("馬場の重さ（泥の影響度）", 0.0, 10.0, 5.0)
-base_val = st.sidebar.slider("ベースタイム（秒）", 130.0, 150.0, 138.0)
-
-st.sidebar.header("📈 2. 各種データの影響度調整")
-course_weight = st.sidebar.slider("競馬場適性の重要度", 0.0, 5.0, 2.0)
-distance_weight = st.sidebar.slider("距離適性(2200m)の重要度", 0.0, 5.0, 2.0)
-jockey_weight = st.sidebar.slider("騎手手腕・実績の重要度", 0.0, 5.0, 2.0)
-
-# ==========================================
-# 4. 展開連動ロジック
-# ==========================================
-if "ハイペース" in selected_pace:
-    pace_stamina_weight = 3.5
-    pace_jockey_weight = 1.0
-elif "スローペース" in selected_pace:
-    pace_stamina_weight = 1.0
-    pace_jockey_weight = 2.5
-elif "道悪" in selected_pace:
-    pace_stamina_weight = 4.0
-    pace_jockey_weight = 1.5
+if df_live is not None:
+    st.success(status)
+    st.info(f"現在の設定 ── 馬場: 【{track_condition}】 | 展開: 【{selected_pace}】")
+    
+    p_info = lap_summary[selected_pace]
+    df = df_live.copy()
+    
+    # オッズから基礎実力を算出
+    df['基礎実力秒'] = base_val + (df['単勝'].apply(lambda x: 0.1 if x < 2.0 else (0.5 if x < 5.0 else (1.5 if x < 15.0 else 3.0))))
+    
+    # 選択された馬場状態（mud_val）を組み込んだ計算式
+    df['予測秒'] = (
+        df['基礎実力秒']
+        + (mud_val * (1.1 - df['泥適性'])) 
+        - (df['スタミナ'] * p_info['スタミナ重み']) 
+        - (df['泥適性'] * course_weight)      
+        - (df['スタミナ'] * distance_weight)  
+        - (df['騎手実績スコア'] * (p_info['騎手重み'] + jockey_weight))
+    )
+    
+    result = df.sort_values(by='予測秒').reset_index(drop=True)
+    result['着順'] = result.index + 1
+    result['予想タイム'] = result['予測秒'].apply(lambda x: f"{int(x//60)}:{x%60:.2f}")
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.subheader("📋 展開ラップ（参考）")
+        st.metric(label="前半3F", value=f"{p_info['前半3F']} 秒")
+        st.metric(label="後半3F", value=f"{p_info['後半3F']} 秒")
+        
+        result['能力スコア'] = result['予測秒'].max() - result['予測秒']
+        st.bar_chart(result.set_index('馬名')['能力スコア'])
+        
+    with col2:
+        st.subheader(f"📊 {tgt_date.year}年 {tgt_place} {tgt_race} 予想ランキング")
+        st.table(result[['着順', '枠番', '馬番', '馬名', '父馬', '系統', '騎手', '単勝', '予想タイム']])
 else:
-    pace_stamina_weight = 2.0
-    pace_jockey_weight = 1.5
-
-# ==========================================
-# 5. 計算と出力
-# ==========================================
-df = df_base.copy()
-
-# すべてのリアルデータを統合した数式
-df['予測秒'] = (
-    base_val 
-    + (mud_val * (1.1 - df['泥適性'])) 
-    - (df['スタミナ'] * pace_stamina_weight) 
-    - (df['同コース適性'] * course_weight)
-    - (df['同距離適性'] * distance_weight)
-    - (df['騎手実績スコア'] * (pace_jockey_weight + jockey_weight))
-)
-
-# ランキングソート
-result = df.sort_values(by='予測秒').reset_index(drop=True)
-result['着順'] = result.index + 1
-result['予想タイム'] = result['予測秒'].apply(lambda x: f"{int(x//60)}:{x%60:.2f}")
-
-# 画面へのメイン表示
-col1, col2 = st.columns([1, 2])
-
-with col1:
-    st.subheader("📋 選択された展開のラップ")
-    st.metric(label="参考 前半3F", value=f"{pace_info['前半3F']} 秒")
-    st.metric(label="参考 後半3F", value=f"{pace_info['後半3F']} 秒")
-    
-    # タイム差の可視化
-    result['能力スコア'] = result['予測秒'].max() - result['予測秒']
-    st.bar_chart(result.set_index('馬名')['能力スコア'])
-
-with col2:
-    st.subheader("📊 2026宝塚記念 リアルデータ連動ランキング")
-    # すべての実名情報が入った美しいテーブル
-    st.table(result[['着順', '枠番', '馬番', '馬名', '系統', '騎手', '単勝', '予想タイム']])
+    st.error(status)
+    st.info("💡 開催日（土日など）と、その日にレースがある競馬場・レース番号を左側で正しく選択してください。")

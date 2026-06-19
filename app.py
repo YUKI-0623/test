@@ -42,18 +42,18 @@ JOCKEY_MAP = {
     '松山': 0.85, 'デム': 0.85, '岩田望': 0.85, '鮫島': 0.85, '西村': 0.85, '菅原明': 0.85, 'ドイル': 0.85,
     '岩田康': 0.83, '津村': 0.83, '田辺': 0.83, '団野': 0.83, '北村友': 0.83, '藤岡佑': 0.83, '荻野極': 0.82,
     '三浦': 0.80, '北村宏': 0.80, '幸': 0.80, '和田': 0.80, '丹内': 0.80, '大野': 0.80, '横山典': 0.80, '武藤': 0.80,
-    '菊沢': 0.85 # 夢のマイホーム補正（少し高めに設定！）
+    '菊沢': 0.85 # 菊沢騎手への熱いマイホーム補正
 }
 
 lap_summary = {
     'ミドルペース（標準・総合力勝負）': {'前半3F': 34.6, '後半3F': 35.5, 'スタミナ重み': 2.0, '騎手重み': 1.5},
-    'ハイペース（持久力・タフ決着）': {'前半3F': 33.9, '後半3F': 36.3, 'スタミナ重み': 3.5, '騎重み': 1.0},
+    'ハイペース（持久力・タフ決着）': {'前半3F': 33.9, '後半3F': 36.3, 'スタミナ重み': 3.5, '騎手重み': 1.0},
     'スローペース（直線瞬発力・キレ勝負）': {'前半3F': 35.2, '後半3F': 34.4, 'スタミナ重み': 1.0, '騎手重み': 2.5},
     '道悪タフペース（重馬場の消耗戦）': {'前半3F': 34.5, '後半3F': 36.6, 'スタミナ重み': 4.0, '騎手重み': 1.5}
 }
 
 # ==========================================
-# 2. サイドバーUI（劇的にシンプル化）
+# 2. サイドバーUI
 # ==========================================
 with st.sidebar:
     st.header("🔗 レースURLの入力")
@@ -82,32 +82,44 @@ with st.sidebar:
     jockey_weight = st.slider("騎手手腕の重要度", 0.0, 5.0, 2.0)
 
 # ==========================================
-# 3. 超強力・URLダイレクト解析エンジン
+# 3. 超強力・ハイブリッド解析エンジン（文字化けサバイバル型）
 # ==========================================
 def fetch_race_data_by_url(url):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
-    # URLから12桁のレースIDをぶち抜く
     race_id_match = re.search(r'race_id=(\d{12})', url)
     if not race_id_match:
         return None, "⚠️ URLの形式が正しくありません。ネット競馬の出馬表URLをそのまま貼り付けてください。"
     
     race_id = race_id_match.group(1)
-    # 血統モードを強制指定してダイレクトにアクセス
     shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}&mode=blood"
     
     try:
         res = requests.get(shutuba_url, headers=headers, timeout=5)
-        res.encoding = 'EUC-JP'  # ★文字化けを根絶する絶対的エンコード固定
-        soup = BeautifulSoup(res.text, "html.parser")
         
-        # レース名をタイトルから自動取得
+        # 🔥【超重要】EUC-JP と UTF-8 の自動サバイバル判定（不正バイトを無視して強制解読）
+        html_text = ""
+        try:
+            test_text = res.content.decode('euc-jp', errors='ignore')
+            if "馬名" in test_text or "出馬表" in test_text or "枠" in test_text:
+                html_text = test_text
+            else:
+                html_text = res.content.decode('utf-8', errors='ignore')
+        except:
+            html_text = res.content.decode('utf-8', errors='ignore')
+            
+        # 最終パース処理
+        if not html_text:
+            soup = BeautifulSoup(res.content, "html.parser")
+        else:
+            soup = BeautifulSoup(html_text, "html.parser")
+        
         page_title = soup.title.text if soup.title else ""
         race_title = page_title.split("|")[0].strip() if "|" in page_title else "ターゲットレース"
         
-        table = soup.find("table", class_="Shutuba_Table")
+        table = soup.find("table", class_=re.compile(r'Shutuba_Table'))
         if not table:
-            return None, "⚠️ 出馬表のテーブルが見つかりません。枠順がまだ未発表の可能性があります。"
+            return None, "⚠️ 出馬表のテーブルが見つかりません。URLが正しいかご確認ください。"
             
         rows = table.find_all("tr", class_="HorseList")
         scraped_data = []
@@ -120,7 +132,7 @@ def fetch_race_data_by_url(url):
                 if waku_match:
                     waku = int(waku_match.group(1))
             
-            umaban_td = row.find("td", class_="Umaban")
+            umaban_td = row.find("td", class_=re.compile(r'Umaban'))
             umaban = 0
             if umaban_td and umaban_td.text.strip().isdigit():
                 umaban = int(umaban_td.text.strip())
@@ -130,20 +142,21 @@ def fetch_race_data_by_url(url):
                 continue
             name = name_span.text.strip()
             
-            jockey_td = row.find("td", class_="Jockey")
+            # 騎手名の取得（余計な減量記号などをクレンジング）
+            jockey_td = row.find("td", class_=re.compile(r'Jockey'))
             jockey = "未定"
-            if jockey_td and jockey_td.text.strip():
+            if jockey_td:
                 jockey_raw = jockey_td.text.strip()
-                jockey = re.sub(r'\d|▲|△|☆|★|◇|◇', '', jockey_raw).strip()
+                jockey = re.sub(r'[\d▲△☆★◇◇\s\n\r]', '', jockey_raw)
             
-            odds_td = row.find("td", class_="Odds")
+            # 🔥単勝オッズの取得（文字化けが残っていても数字だけを確実にぶち抜く）
+            odds_td = row.find("td", class_=re.compile(r'Odds'))
             odds = 10.0
-            if odds_td and odds_td.text.strip():
+            if odds_td:
                 odds_text = odds_td.text.strip()
-                try:
-                    odds = float(odds_text) if "." in odds_text else 10.0
-                except:
-                    odds = 50.0
+                odds_num = re.findall(r'\d+\.\d+|\d+', odds_text)
+                if odds_num:
+                    odds = float(odds_num[0])
                 
             sire_link = row.find("a", href=re.compile(r'/sire/'))
             sire_name = sire_link.text.strip() if sire_link else "不明"
@@ -165,7 +178,7 @@ def fetch_race_data_by_url(url):
         if not scraped_data:
             return None, "⚠️ 出走馬の情報を読み込めませんでした。"
             
-        return pd.DataFrame(scraped_data), f"🟢 【成功】「{race_title}」のデータを100%綺麗に解析しました！"
+        return pd.DataFrame(scraped_data), f"🟢 「{race_title}」のデータを完全に解読しました！"
         
     except Exception as e:
         return None, f"❌ エラー: {str(e)}"
@@ -183,8 +196,10 @@ if race_url:
         p_info = lap_summary[selected_pace]
         df = df_live.copy()
         
+        # オッズベースの実力計算
         df['基礎実力秒'] = base_val + (df['単勝'].apply(lambda x: 0.1 if x < 2.0 else (0.5 if x < 5.0 else (1.5 if x < 15.0 else 3.0))))
         
+        # 総合展開シミュレーション数式
         df['予測秒'] = (
             df['基礎実力秒']
             + (mud_val * (1.1 - df['泥適性'])) 

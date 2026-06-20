@@ -8,7 +8,7 @@ import time
 # 画面全体の基本設定
 st.set_page_config(page_title="ガチ実績連動 × 展開シミュレーター", layout="wide")
 st.title("🏇 ガチ実績連動 × 展開シミュレーター")
-st.caption("【完全修正版】通常出馬表からオッズ・枠番を確定させ、個別DBから過去5走と血統を完全同期するシステム")
+st.caption("【文字化け修正版】出馬表(UTF-8)とデータベース(EUC-JP)の文字コード自動判定を搭載")
 st.markdown("---")
 
 # ==========================================
@@ -83,7 +83,7 @@ with st.sidebar:
     jockey_weight = st.slider("騎手手腕の重要度", 0.0, 5.0, 2.0)
 
 # ==========================================
-# 3. 解析エンジン（堅牢版スクレイピング）
+# 3. 解析エンジン（文字コード自動判定版）
 # ==========================================
 def fetch_race_data_by_url(url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -93,13 +93,14 @@ def fetch_race_data_by_url(url):
         return None, "⚠️ URLからレースID（12桁の数字）が見つかりません。"
     
     race_id = race_id_match.group(1)
-    # 🔥通常モード(mode=top)でアクセスし、オッズと正確な馬IDを確保する
     shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
     
     try:
         res = requests.get(shutuba_url, headers=headers, timeout=5)
-        # ネット競馬特有のEUC-JP文字化けを強力に防ぐ
-        html_text = res.content.decode('euc-jp', errors='ignore')
+        
+        # 🔥【重要】出馬表ページは最新の UTF-8 なので、レスポンスの自動判別に任せる
+        res.encoding = res.apparent_encoding
+        html_text = res.text
             
         soup = BeautifulSoup(html_text, "html.parser")
         
@@ -108,14 +109,13 @@ def fetch_race_data_by_url(url):
         
         table = soup.find("table", class_=re.compile(r'Shutuba_Table'))
         if not table:
-            return None, "⚠️ 出馬表のテーブルが見つかりません。まだ出馬表が確定していない可能性があります。"
+            return None, "⚠️ 出馬表のテーブルが見つかりません。まだ枠順が確定していない可能性があります。"
             
         rows = table.find_all("tr", class_="HorseList")
         scraped_data = []
         
-        # 1次解析：オッズ・枠番・馬IDを確実に回収
         for row in rows:
-            # 枠番（大文字小文字の両方に対応）
+            # 枠番
             waku_td = row.find("td", class_=re.compile(r'(waku|Waku)\d'))
             waku = 1
             if waku_td:
@@ -133,11 +133,12 @@ def fetch_race_data_by_url(url):
             if umaban_td and umaban_td.text.strip().isdigit(): 
                 umaban = int(umaban_td.text.strip())
             
-            # 馬名と正確な馬ID
+            # 馬名
             name_span = row.find("span", class_=re.compile(r'(HorseName|horsename)'))
             if not name_span: continue
             name = name_span.text.strip()
             
+            # 馬ID
             horse_id = ""
             name_a = name_span.find("a")
             if name_a and 'href' in name_a.attrs:
@@ -151,7 +152,7 @@ def fetch_race_data_by_url(url):
             if jockey_td:
                 jockey = re.sub(r'[\d▲△☆★◇◇\s\n\r]', '', jockey_td.text.strip())
             
-            # 単勝オッズ（通常表から確実に抽出）
+            # 単勝オッズ
             odds_td = row.find("td", class_=re.compile(r'(Odds|odds)'))
             odds = 10.0
             if odds_td:
@@ -168,13 +169,13 @@ def fetch_race_data_by_url(url):
             scraped_data.append({
                 '枠番': waku, '馬番': umaban, '馬名': name, '馬ID': horse_id, 
                 '騎手': jockey, '単勝': odds, '騎手実績スコア': j_score,
-                '父馬': '不明', '系統': 'その他', '泥適性': 0.65, 'スタミナ': 0.70 # 個別ページで上書きする初期値
+                '父馬': '不明', '系統': 'その他', '泥適性': 0.65, 'スタミナ': 0.70
             })
             
         if not scraped_data:
-            return None, "⚠️ 出走馬の情報を解析できませんでした。"
+            return None, "⚠️ 出走馬の情報を取得できませんでした。"
             
-        # 2次解析：各馬の個別データベースページを自動巡回（ここで血統と過去5走を同時回収）
+        # 2次解析：個別DBページを巡回
         st.markdown("### ⏳ 過去実績と血統データを深層解析中...")
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -183,16 +184,20 @@ def fetch_race_data_by_url(url):
         for idx, horse in enumerate(scraped_data):
             status_text.text(f"🏇 {idx+1}/{len(scraped_data)}頭目: 【{horse['馬名']}】のデータベースを同期中...")
             
-            avg_rank = 7.0  # デフォルト値
+            avg_rank = 7.0
             
             if horse['馬ID']:
                 try:
                     db_url = f"https://db.netkeiba.com/horse/{horse['馬ID']}/"
                     db_res = requests.get(db_url, headers=headers, timeout=5)
-                    db_html = db_res.content.decode('euc-jp', errors='ignore')
+                    
+                    # 🔥【重要】個別データベース側は歴史的に「EUC-JP」のままなので、明示してデコードする
+                    db_res.encoding = 'euc-jp'
+                    db_html = db_res.text
+                    
                     db_soup = BeautifulSoup(db_html, "html.parser")
                     
-                    # 🔥【新設】個別ページから「父馬」を確実に引っこ抜く
+                    # 父馬の抽出
                     sire_link = db_soup.find("a", href=re.compile(r'/sire/'))
                     if sire_link:
                         horse['父馬'] = sire_link.text.strip()
@@ -201,7 +206,7 @@ def fetch_race_data_by_url(url):
                         horse['泥適性'] = spec['泥']
                         horse['スタミナ'] = spec['スタミナ']
                     
-                    # 直近5走の着順を取得
+                    # 直近5走の着順
                     history_table = db_soup.find("table", class_="db_main_table")
                     if history_table:
                         rows = history_table.find_all("tr")[1:]
@@ -220,13 +225,13 @@ def fetch_race_data_by_url(url):
             horse['過去5走平均着順'] = round(avg_rank, 1)
             final_data.append(horse)
             
-            time.sleep(0.1)  # 負荷軽減
+            time.sleep(0.1) # サーバー負荷軽減
             progress_bar.progress((idx + 1) / len(scraped_data))
             
         status_text.empty()
         progress_bar.empty()
         
-        return pd.DataFrame(final_data), f"🟢 「{race_title}」の全データを完全同期しました！"
+        return pd.DataFrame(final_data), f"🟢 「{race_title}」の全データを文字化けなしで完全同期しました！"
         
     except Exception as e:
         return None, f"❌ エラーが発生しました: {str(e)}"

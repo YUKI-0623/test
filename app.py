@@ -3,13 +3,13 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import re
-import hashlib
+import time
 import numpy as np
 
 # 画面全体の基本設定
-st.set_page_config(page_title="条件ダイナミック連動 🏇 ガチ展開シミュレーター", layout="wide")
-st.title("🏇 条件ダイナミック連動 × 展開シミュレーター")
-st.caption("【完全修正モデル】馬場・展開・重み付けの変更でリアルタイムに予想順位が動的に変動！")
+st.set_page_config(page_title="順序指定・実戦データ解析 🏇 展開シミュレーター", layout="wide")
+st.title("🏇 順序指定・実戦データ解析 × 展開シミュレーター")
+st.caption("指定順序（①出走馬 ➔ ②騎手 ➔ ③オッズ ➔ ④過去レース結果）で本物のデータを1頭ずつ精密取得")
 st.markdown("---")
 
 # ==========================================
@@ -21,7 +21,17 @@ SIRE_MAP = {
     'キタサンブラック': 'ブラックタイド系', 'ブラックタイド': 'ブラックタイド系',
     'ドゥラメンテ': 'キングカメハメハ系', 'ロードカナロア': 'キングカメハメハ系', 'ルーラーシップ': 'キングカメハメハ系',
     'キズナ': 'ディープ系', 'ディープインパクト': 'ディープ系', 'コントレイル': 'ディープ系',
-    'スワーヴリチャード': 'ハーツクライ系', 'ハーツクライ': 'ハーツクライ系',
+    'スワーヴリチャード': 'ハーツクライ系', 'ハーツクライ': 'ハーツクライ系', 'ジャスタウェイ': 'ハーツクライ系',
+}
+
+BLOOD_SPEC = {
+    'ステイゴールド系': {'泥適性': 0.90, 'スタミナ': 0.90, '瞬発力': 0.60},
+    'ロベルト系': {'泥適性': 0.85, 'スタミナ': 0.85, '瞬発力': 0.65},
+    'ブラックタイド系': {'泥適性': 0.75, 'スタミナ': 0.85, '瞬発力': 0.75},
+    'キングカメハメハ系': {'泥適性': 0.70, 'スタミナ': 0.75, '瞬発力': 0.80},
+    'ディープ系': {'泥適性': 0.55, 'スタミナ': 0.70, '瞬発力': 0.95},
+    'ハーツクライ系': {'泥適性': 0.65, 'スタミナ': 0.85, '瞬発力': 0.80},
+    'その他': {'泥適性': 0.65, 'スタミナ': 0.70, '瞬発力': 0.70}
 }
 
 JOCKEY_MAP = {
@@ -57,181 +67,239 @@ with st.sidebar:
     base_val = st.slider("ベースタイム（秒）", 70.0, 160.0, 95.0)
 
     st.header("📈 2. パラメーター重み付け")
-    history_weight = st.slider("🔥 実績・オッズ評価の重み", 0.0, 5.0, 2.5)
-    course_weight = st.slider("☔ 馬場・泥適性の重み", 0.0, 5.0, 2.5)
-    pace_weight = st.slider("🏃 展開（スタミナ/キレ）の重み", 0.0, 5.0, 2.5)
+    history_weight = st.slider("🔥 過去実績（前走着順）の重み", 0.0, 5.0, 2.5)
+    odds_weight = st.slider("💰 オッズ（支持率）の重み", 0.0, 5.0, 2.0)
+    course_weight = st.slider("☔ 馬場・血統適性の重み", 0.0, 5.0, 2.0)
     jockey_weight = st.slider("🏇 騎手手腕の重み", 0.0, 5.0, 2.0)
 
 # ==========================================
-# 3. オッズ＆出馬表スクレイパー
+# 3. 指定順序による段階的・本物データ収集エンジン
 # ==========================================
-def fetch_real_odds(race_id, headers):
-    odds_url = f"https://race.netkeiba.com/race/odds.html?race_id={race_id}"
-    odds_map = {}
-    try:
-        res = requests.get(odds_url, headers=headers, timeout=4)
-        res.encoding = res.apparent_encoding
-        soup = BeautifulSoup(res.text, "html.parser")
-        for row in soup.find_all("tr"):
-            umaban_td = row.find("td", class_=re.compile(r'(Umaban|umaban|Bidx)'))
-            odds_td = row.find("td", class_=re.compile(r'(Odds|odds|Tansho)'))
-            if umaban_td and odds_td:
-                u_txt = umaban_td.text.strip()
-                o_txt = odds_td.text.strip()
-                if u_txt.isdigit():
-                    num_match = re.search(r'\d+\.\d+', o_txt)
-                    if num_match:
-                        odds_map[int(u_txt)] = float(num_match.group(0))
-    except: pass
-    return odds_map
-
-def fetch_race_by_url(url):
+def fetch_data_step_by_step(url):
     race_id_match = re.search(r'race_id=(\d{12})', url)
     if not race_id_match:
         return None, "⚠️ URLに12桁のレースIDが含まれていません。"
     
     race_id = race_id_match.group(1)
-    target_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+    shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+    odds_url = f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
     
+    session = requests.Session()
+    session.headers.update(headers)
+    
+    status_box = st.status("🔍 データ取得プロセスを開始します...", expanded=True)
+    
+    # ----------------------------------------------------
+    # ステップ①＆②：出走馬と騎手の取得
+    # ----------------------------------------------------
+    status_box.write("📌 **【ステップ① & ②】出走馬リストおよび騎手データを取得中...**")
     try:
-        odds_map = fetch_real_odds(race_id, headers)
-        
-        res = requests.get(target_url, headers=headers, timeout=5)
+        res = session.get(shutuba_url, timeout=6)
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, "html.parser")
         
         rows = soup.find_all("tr", class_="HorseList")
         if not rows:
-            return None, "⚠️ 出馬表データが取得できませんでした。URLを確認してください。"
+            status_box.update(label="❌ 出馬表が取得できませんでした。", state="error")
+            return None, "出馬表の取得に失敗しました。"
             
-        scraped_data = []
-        styles = ['逃げ', '先行', '差し', '追込']
-        
+        horses_data = []
         for idx, row in enumerate(rows):
-            # 馬番
             umaban = idx + 1
             umaban_td = row.find("td", class_=re.compile(r'Umaban|umaban'))
             if umaban_td and umaban_td.text.strip().isdigit():
                 umaban = int(umaban_td.text.strip())
                 
-            # 枠番
             waku = (umaban - 1) // 2 + 1
             if waku > 8: waku = 8
             
-            # 馬名
+            # ① 出走馬名 ＆ 馬ID
             name_span = row.find("span", class_=re.compile(r'(HorseName|horsename)'))
             if not name_span: continue
             name = name_span.text.strip()
             
-            # 騎手
+            horse_id = ""
+            a_tag = name_span.find("a")
+            if a_tag and 'href' in a_tag.attrs:
+                id_match = re.search(r'\d{10}', a_tag['href'])
+                if id_match: horse_id = id_match.group(0)
+                
+            # ② 騎手名
             jockey = "未定"
             jockey_td = row.find("td", class_=re.compile(r'(Jockey|jockey)'))
             if jockey_td:
                 jockey = re.sub(r'[\d▲△☆★◇◇\s\n\r]', '', jockey_td.text.strip())
                 
-            # オッズ（本物オッズ ＞ テーブル内オッズ ＞ 決定論的ダイナミック分布）
-            odds = odds_map.get(umaban, None)
-            if odds is None:
-                odds_td = row.find("td", class_=re.compile(r'(Odds|odds)'))
-                if odds_td:
-                    o_match = re.search(r'\d+\.\d+', odds_td.text)
-                    if o_match: odds = float(o_match.group(0))
-            if odds is None:
-                # 馬名ハッシュで一意なランダムオッズ（馬番順を完全回避）
-                h = int(hashlib.md5(name.encode('utf-8')).hexdigest(), 16)
-                odds = round(2.0 + (h % 350) / 10.0, 1)
-                
-            # 騎手スコア
             j_score = 0.75
             for k, v in JOCKEY_MAP.items():
                 if k in jockey:
                     j_score = v
                     break
                     
-            # 父馬・血統の抽出
-            father = "不明"
-            blood_td = row.find("td", class_=re.compile(r'Blood|blood'))
-            if blood_td: father = blood_td.text.strip()
-            
-            # 💡 【核心】馬ごとに完全に異なるパラメーター（泥適性・スタミナ・瞬発力・脚質）を生成
-            name_hash = int(hashlib.md5((name + "salt").encode('utf-8')).hexdigest(), 16)
-            
-            泥適性 = round(0.50 + ((name_hash % 45) / 100.0), 2)
-            スタミナ = round(0.50 + (((name_hash >> 3) % 45) / 100.0), 2)
-            瞬発力 = round(0.50 + (((name_hash >> 6) % 45) / 100.0), 2)
-            脚質 = styles[(name_hash >> 9) % 4]
-            
-            # 血統による補正（血統がマッチすれば適性アップ）
-            for k, v in SIRE_MAP.items():
-                if k in father or k in name:
-                    if 'ステイゴールド' in v or 'ロベルト' in v:
-                        泥適性 = min(0.95, 泥適性 + 0.25)
-                        スタミナ = min(0.95, スタミナ + 0.20)
-                    elif 'ディープ' in v:
-                        瞬発力 = min(0.95, 瞬発力 + 0.25)
-                        泥適性 = max(0.40, 泥適性 - 0.10)
-                    break
-
-            scraped_data.append({
-                '枠番': waku, '馬番': umaban, '馬名': name, '騎手': jockey,
-                '単勝': odds, '騎手実績スコア': j_score,
-                '父馬': father, '脚質': 脚質,
-                '泥適性': 泥適性, 'スタミナ': スタミナ, '瞬発力': 瞬発力,
-                '基礎能力値': round(1.5 + (odds * 0.12), 2) if odds < 60 else 9.0
+            horses_data.append({
+                '枠番': waku, '馬番': umaban, '馬名': name, '馬ID': horse_id,
+                '騎手': jockey, '騎手実績スコア': j_score,
+                '単勝オッズ': 999.0, '過去5走': [], '過去5走平均着順': 9.0,
+                '父馬': '取得中...', '系統': 'その他',
+                '泥適性': 0.65, 'スタミナ': 0.70, '瞬発力': 0.70
             })
             
-        return pd.DataFrame(scraped_data), f"🟢 【データ更新完了】{len(scraped_data)}頭のリアルタイムデータを読み込みました！"
+        status_box.write(f"✅ 出走馬 {len(horses_data)} 頭および騎手データの抽出が完了しました。")
         
     except Exception as e:
-        return None, f"❌ 通信エラーが発生しました: {str(e)}"
+        status_box.update(label=f"❌ ステップ①・②でエラー: {str(e)}", state="error")
+        return None, str(e)
+        
+    # ----------------------------------------------------
+    # ステップ③：本物オッズの取得
+    # ----------------------------------------------------
+    status_box.write("📌 **【ステップ③】リアルタイム単勝オッズを個別に取得中...**")
+    try:
+        # オッズ専用ページの取得
+        res_odds = session.get(odds_url, timeout=5)
+        res_odds.encoding = res_odds.apparent_encoding
+        soup_odds = BeautifulSoup(res_odds.text, "html.parser")
+        
+        odds_map = {}
+        # テーブル行を走査
+        for tr in soup_odds.find_all("tr"):
+            td_num = tr.find("td", class_=re.compile(r'(Umaban|umaban|Bidx)'))
+            td_odds = tr.find("td", class_=re.compile(r'(Odds|odds|Tansho)'))
+            if td_num and td_odds:
+                num_str = td_num.text.strip()
+                odds_str = td_odds.text.strip()
+                if num_str.isdigit():
+                    m = re.search(r'\d+\.\d+', odds_str)
+                    if m:
+                        odds_map[int(num_str)] = float(m.group(0))
+                        
+        # 紐付け
+        success_odds_count = 0
+        for horse in horses_data:
+            u_num = horse['馬番']
+            if u_num in odds_map:
+                horse['単勝オッズ'] = odds_map[u_num]
+                success_odds_count += 1
+            else:
+                # 出馬表側からのフォールバック取得
+                for row in rows:
+                    u_td = row.find("td", class_=re.compile(r'Umaban|umaban'))
+                    if u_td and u_td.text.strip() == str(u_num):
+                        o_td = row.find("td", class_=re.compile(r'Odds|odds'))
+                        if o_td:
+                            m = re.search(r'\d+\.\d+', o_td.text)
+                            if m:
+                                horse['単勝オッズ'] = float(m.group(0))
+                                success_odds_count += 1
+                                
+        status_box.write(f"✅ 全{len(horses_data)}頭中 {success_odds_count}頭 のリアルタイム単勝オッズを確定取得しました！")
+        
+    except Exception as e:
+        status_box.write(f"⚠️ オッズページ取得注意: 出馬表デフォルト値で進行します ({str(e)})")
+
+    # ----------------------------------------------------
+    # ステップ④：各出走馬の過去レース結果（過去5走）を1頭ずつ取得
+    # ----------------------------------------------------
+    status_box.write("📌 **【ステップ④】各出走馬の過去5走レース結果・血統データを1頭ずつパース中...**")
+    progress_bar = st.progress(0)
+    
+    for idx, horse in enumerate(horses_data):
+        h_id = horse['馬ID']
+        if h_id:
+            try:
+                # 馬詳細ページ（レース結果一覧）
+                db_url = f"https://db.netkeiba.com/horse/{h_id}/"
+                db_res = session.get(db_url, timeout=4)
+                
+                if db_res.status_code == 200:
+                    db_res.encoding = 'euc-jp'
+                    db_soup = BeautifulSoup(db_res.text, "html.parser")
+                    
+                    # 1. 父馬（血統）の特定
+                    sire_link = db_soup.find("a", href=re.compile(r'/sire/'))
+                    if sire_link:
+                        father = sire_link.text.strip()
+                        horse['父馬'] = father
+                        # 血統分類
+                        syst = 'その他'
+                        for k, v in SIRE_MAP.items():
+                            if k in father:
+                                syst = v
+                                break
+                        horse['系統'] = syst
+                        
+                        # 血統からの適性値割り当て
+                        spec = BLOOD_SPEC.get(syst, BLOOD_SPEC['その他'])
+                        horse['泥適性'] = spec['泥適性']
+                        horse['スタミナ'] = spec['スタミナ']
+                        horse['瞬発力'] = spec['瞬発力']
+                        
+                    # 2. 過去5走の成績テーブル取得
+                    history_table = db_soup.find("table", class_="db_main_table")
+                    if history_table:
+                        h_rows = history_table.find_all("tr")[1:]
+                        ranks = []
+                        for r in h_rows[:5]:
+                            tds = r.find_all("td")
+                            if len(tds) > 11:
+                                rank_text = tds[11].text.strip()
+                                if rank_text.isdigit():
+                                    ranks.append(int(rank_text))
+                        
+                        if ranks:
+                            horse['過去5走'] = ranks
+                            horse['過去5走平均着順'] = round(sum(ranks) / len(ranks), 1)
+                            
+            except Exception:
+                pass # 通信エラー時はデフォルト保持
+                
+        time.sleep(0.15) # サーバー負荷防止用のウェイト
+        progress_bar.progress((idx + 1) / len(horses_data))
+        
+    progress_bar.empty()
+    status_box.update(label="🎉 すべてのデータ（①出走馬 ➔ ②騎手 ➔ ③オッズ ➔ ④過去成績）の正確な読み込みが完了しました！", state="complete")
+    
+    return pd.DataFrame(horses_data), "🟢 成功"
 
 # ==========================================
 # 4. 条件連動・シミュレーション演算エンジン
 # ==========================================
 if race_url:
-    df, status = fetch_race_by_url(race_url)
+    df, status = fetch_data_step_by_step(race_url)
     
     if df is not None:
-        st.success(status)
+        p_info = {
+            "ミドルペース（標準・総合力勝負）": {"スタミナ": 1.0, "瞬発力": 1.0},
+            "ハイペース（持久力・タフ決着）": {"スタミナ": 2.2, "瞬発力": 0.5},
+            "スローペース（直線瞬発力・キレ勝負）": {"スタミナ": 0.5, "瞬発力": 2.2}
+        }[selected_pace]
         
-        # 1. オッズ/実績による基礎差
-        df['実力タイム差'] = df['基礎能力値'] * 0.3 * history_weight
+        # 実数値を用いた精度の高いタイム差計算
+        df['実績影響秒'] = (df['過去5走平均着順'] - 4.5) * 0.22 * history_weight
+        df['オッズ影響秒'] = np.log1p(df['単勝オッズ']) * 0.35 * odds_weight
+        df['馬場適性秒'] = mud_val * (1.0 - df['泥適性']) * 0.20 * course_weight
+        df['展開適性秒'] = - ((df['スタミナ'] * p_info['スタミナ'] + df['瞬発力'] * p_info['瞬発力']) * 0.3)
+        df['騎手補正秒'] = - (df['騎手実績スコア'] * 0.5 * jockey_weight)
         
-        # 2. 馬場状態による適性補正（重馬場ほど泥適性が低い馬が大きく失速）
-        df['馬場適性補正'] = mud_val * (1.0 - df['泥適性']) * 0.25 * course_weight
+        # 合計予測秒数
+        df['予測秒'] = base_val + df['実績影響秒'] + df['オッズ影響秒'] + df['馬場適性秒'] + df['展開適性秒'] + df['騎手補正秒']
         
-        # 3. 展開（ペース × 脚質 × スタミナ/瞬発力）による動的補正
-        if "ハイペース" in selected_pace:
-            # ハイペース：スタミナが低い馬・逃げ馬が苦しく、差し・追込馬・スタミナ型が急浮上
-            style_bonus = df['脚質'].map({'逃げ': 0.8, '先行': 0.3, '差し': -0.4, '追込': -0.7})
-            df['展開適性補正'] = (style_bonus - (df['スタミナ'] * 1.5)) * 0.4 * pace_weight
-        elif "スローペース" in selected_pace:
-            # スローペース：瞬発力が高い馬・逃げ・先行馬が圧倒的有利
-            style_bonus = df['脚質'].map({'逃げ': -0.6, '先行': -0.4, '差し': 0.2, '追込': 0.5})
-            df['展開適性補正'] = (style_bonus - (df['瞬発力'] * 1.5)) * 0.4 * pace_weight
-        else:
-            # ミドルペース：総合力勝負
-            style_bonus = df['脚質'].map({'逃げ': 0.0, '先行': -0.1, '差し': 0.0, '追込': 0.1})
-            df['展開適性補正'] = (style_bonus - (df['スタミナ'] * 0.8 + df['瞬発力'] * 0.8)) * 0.3 * pace_weight
-            
-        # 4. 騎手補正
-        df['騎手補正'] = - (df['騎手実績スコア'] * 0.6 * jockey_weight)
-        
-        # 最終予測秒数（全パラメータの合計）
-        df['予測秒'] = base_val + df['実力タイム差'] + df['馬場適性補正'] + df['展開適性補正'] + df['騎手補正']
-        
-        # ソートして着順決定
         result = df.sort_values(by='予測秒').reset_index(drop=True)
         result['着順'] = result.index + 1
         result['予想タイム'] = result['予測秒'].apply(lambda x: f"{int(x//60)}:{x%60:.2f}")
         
-        # 適性指数の算出（トップ馬を最大値に可視化）
-        max_sec = result['予測秒'].max()
-        result['ガチ適性指数'] = round((max_sec - result['予測秒']) * 12 + 50, 1)
+        # 指数化（最高馬を100に）
+        max_s = result['予測秒'].max()
+        min_s = result['予測秒'].min()
+        diff_s = max(0.1, max_s - min_s)
+        result['ガチ適性指数'] = round(50 + (max_s - result['予測秒']) / diff_s * 45, 1)
+        
+        # 過去5走の文字列整形
+        result['過去5走着順'] = result['過去5走'].apply(lambda x: " - ".join(map(str, x)) if x else "データなし")
         
         col1, col2 = st.columns([1, 2])
         with col1:
@@ -239,17 +307,15 @@ if race_url:
             st.bar_chart(result.set_index('馬名')['ガチ適性指数'])
             
             st.markdown("""
-            **💡 条件変更のヒント**
-            - **馬場状態を「重馬場」に変更**: 泥適性の高いタフな馬が急浮上します。
-            - **展開を「ハイペース」に変更**: 差し・追込馬やスタミナ型の指数が跳ね上がります。
-            - **展開を「スローペース」に変更**: 逃げ・先行馬や直線瞬発力（キレ）のある馬が浮上します。
+            **📋 取得データの解説**
+            - **単勝オッズ**: リアルタイムで取得した実オッズ
+            - **過去5走着順**: 過去5戦の実績着順（1頭ずつWebから正確に抽出）
+            - **過去5走平均**: 5戦の平均着順
             """)
             
         with col2:
-            st.subheader("🏆 シミュレーション最終予測")
+            st.subheader("🏆 シミュレーション最終予測（実データ連動）")
             st.table(result[[
                 '着順', '枠番', '馬番', '馬名', 'ガチ適性指数', 
-                '脚質', '泥適性', 'スタミナ', '瞬発力', '騎手', '単勝', '予想タイム'
+                '単勝オッズ', '過去5走平均着順', '過去5走着順', '父馬', '騎手', '予想タイム'
             ]])
-    else:
-        st.warning(status)

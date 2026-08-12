@@ -58,8 +58,8 @@ BLOOD_SPEC = {
 }
 
 JOCKEY_MAP = {
-    "ルメ": 0.98,
-    "モレイ": 0.98,
+    "ルメール": 0.98,
+    "モレイラ": 0.98,
     "川田": 0.95,
     "武豊": 0.95,
     "レーン": 0.95,
@@ -68,10 +68,10 @@ JOCKEY_MAP = {
     "横山武": 0.88,
     "横山和": 0.88,
     "松山": 0.85,
-    "デム": 0.85,
+    "デムーロ": 0.85,
     "岩田望": 0.85,
-    "鮫島": 0.85,
-    "西村": 0.85,
+    "鮫島克": 0.85,
+    "西村淳": 0.85,
     "菅原明": 0.85,
     "幸": 0.80,
     "横山典": 0.80,
@@ -117,7 +117,7 @@ with st.sidebar:
 
 
 # ==========================================
-# 3. 指定順序データ取得エンジン（文字化け完全対策版）
+# 3. 指定順序データ取得エンジン
 # ==========================================
 def fetch_data(url):
   match = re.search(r"race_id=(\d{12})", url)
@@ -130,15 +130,14 @@ def fetch_data(url):
   )
 
   # ----------------------------------------------------
-  # ①・② 出走馬と騎手の取得（文字化けゼロ処理）
+  # ①・② 出走馬と騎手の取得（出馬表は UTF-8 で処理）
   # ----------------------------------------------------
   status_box.write("📌 **【①・②】出走馬リストと騎手データを取得中...**")
   shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
   try:
     res = requests.get(shutuba_url, headers=HEADERS, timeout=8)
-    # 文字化け防止のデコード処理
-    html_text = res.content.decode("euc-jp", errors="ignore")
-    soup = BeautifulSoup(html_text, "html.parser")
+    res.encoding = "utf-8"  # race.netkeiba.com は UTF-8
+    soup = BeautifulSoup(res.text, "html.parser")
     rows = soup.find_all("tr", class_="HorseList")
 
     if not rows:
@@ -229,7 +228,7 @@ def fetch_data(url):
     status_box.write(f"⚠️ オッズ取得注意: {e}")
 
   # ----------------------------------------------------
-  # ④ 各馬の過去成績・父馬（血統）を取得
+  # ④ 各馬の過去成績・父馬（血統）を取得（DBは EUC-JP で処理）
   # ----------------------------------------------------
   status_box.write(
       "📌 **【④】各馬の過去成績・父馬データを1頭ずつ抽出中...**"
@@ -241,25 +240,25 @@ def fetch_data(url):
       try:
         h_url = f"https://db.netkeiba.com/horse/{h['馬ID']}/"
         h_res = requests.get(h_url, headers=HEADERS, timeout=5)
-
-        # euc-jpの文字化け回避
-        h_html = h_res.content.decode("euc-jp", errors="ignore")
-        soup_h = BeautifulSoup(h_html, "html.parser")
+        h_res.encoding = "euc-jp"  # db.netkeiba.com は EUC-JP
+        soup_h = BeautifulSoup(h_res.text, "html.parser")
 
         # 1. 父馬（血統）の抽出
-        sire_a = soup_h.find("a", href=re.compile(r"/sire/"))
-        if sire_a:
-          father = sire_a.text.strip()
-          h["父馬"] = father
-          syst = "その他"
-          for k, v in SIRE_MAP.items():
-            if k in father:
-              syst = v
-              break
-          spec = BLOOD_SPEC.get(syst, BLOOD_SPEC["その他"])
-          h["泥適性"] = spec["泥適性"]
-          h["スタミナ"] = spec["スタミナ"]
-          h["瞬発力"] = spec["瞬発力"]
+        prof_tbl = soup_h.find("table", class_="prof_table")
+        if prof_tbl:
+          sire_a = prof_tbl.find("a", href=re.compile(r"/horse/ped/"))
+          if sire_a:
+            father = sire_a.text.strip()
+            h["父馬"] = father
+            syst = "その他"
+            for k, v in SIRE_MAP.items():
+              if k in father:
+                syst = v
+                break
+            spec = BLOOD_SPEC.get(syst, BLOOD_SPEC["その他"])
+            h["泥適性"] = spec["泥適性"]
+            h["スタミナ"] = spec["スタミナ"]
+            h["瞬発力"] = spec["瞬発力"]
 
         # 2. 過去5走の成績抽出
         hist_table = soup_h.find("table", class_="db_main_table")

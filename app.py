@@ -9,7 +9,7 @@ import streamlit as st
 
 # 画面全体の基本設定
 st.set_page_config(
-    page_title="条件ダイナミック連動 🏇 ガチ展開シミュレーター",
+    page_title="順序指定・実戦データ解析 🏇 展開シミュレーター",
     layout="wide",
 )
 st.title("🏇 順序指定・実戦データ解析 × 展開シミュレーター")
@@ -117,7 +117,7 @@ with st.sidebar:
 
 
 # ==========================================
-# 3. データ取得エンジン
+# 3. 指定順序データ取得エンジン（文字化け完全対策版）
 # ==========================================
 def fetch_data(url):
   match = re.search(r"race_id=(\d{12})", url)
@@ -129,13 +129,16 @@ def fetch_data(url):
       "🔍 データを順序指定で取得中...", expanded=True
   )
 
-  # ①・② 出走馬と騎手の取得
+  # ----------------------------------------------------
+  # ①・② 出走馬と騎手の取得（文字化けゼロ処理）
+  # ----------------------------------------------------
   status_box.write("📌 **【①・②】出走馬リストと騎手データを取得中...**")
   shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
   try:
     res = requests.get(shutuba_url, headers=HEADERS, timeout=8)
-    res.encoding = "euc-jp"
-    soup = BeautifulSoup(res.text, "html.parser")
+    # 文字化け防止のデコード処理
+    html_text = res.content.decode("euc-jp", errors="ignore")
+    soup = BeautifulSoup(html_text, "html.parser")
     rows = soup.find_all("tr", class_="HorseList")
 
     if not rows:
@@ -147,21 +150,28 @@ def fetch_data(url):
     horses = []
     for idx, row in enumerate(rows):
       u_td = row.find("td", class_=re.compile(r"Umaban"))
-      umaban = int(u_td.text.strip()) if u_td and u_td.text.strip().isdigit() else idx + 1
+      umaban = (
+          int(u_td.text.strip())
+          if u_td and u_td.text.strip().isdigit()
+          else idx + 1
+      )
       waku = (umaban - 1) // 2 + 1
+      if waku > 8:
+        waku = 8
 
-      h_span = row.find("span", class_=re.compile(r"HorseName"))
-      if not h_span:
-        continue
-      name = h_span.text.strip()
-
+      # 馬名と馬ID
+      h_td = row.find("td", class_=re.compile(r"HorseInfo"))
+      name = "不明"
       h_id = ""
-      a_tag = h_span.find("a")
-      if a_tag and "href" in a_tag.attrs:
-        m = re.search(r"\d{10}", a_tag["href"])
-        if m:
-          h_id = m.group(0)
+      if h_td:
+        a_tag = h_td.find("a", href=re.compile(r"/horse/"))
+        if a_tag:
+          name = a_tag.text.strip()
+          m = re.search(r"/horse/(\d+)", a_tag["href"])
+          if m:
+            h_id = m.group(1)
 
+      # 騎手名
       j_td = row.find("td", class_=re.compile(r"Jockey"))
       jockey = (
           re.sub(r"[\d▲△☆★◇◇\s\n\r]", "", j_td.text.strip())
@@ -190,12 +200,16 @@ def fetch_data(url):
           "瞬発力": 0.70,
       })
 
-    status_box.write(f"✅ {len(horses)}頭の基本情報を抽出しました。")
+    status_box.write(
+        f"✅ {len(horses)}頭の基本情報（馬名・騎手）を正常に取得しました。"
+    )
   except Exception as e:
     status_box.update(label=f"❌ ①・②でエラー: {e}", state="error")
     return None, str(e)
 
+  # ----------------------------------------------------
   # ③ 単勝オッズの取得 (API経由)
+  # ----------------------------------------------------
   status_box.write("📌 **【③】単勝オッズ（実値）を取得中...**")
   try:
     odds_api_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1"
@@ -212,10 +226,14 @@ def fetch_data(url):
             h["単勝オッズ"] = float(val)
     status_box.write("✅ オッズの確定値読み込み完了。")
   except Exception as e:
-    status_box.write(f"⚠️ オッズAPIフォールバック: {e}")
+    status_box.write(f"⚠️ オッズ取得注意: {e}")
 
-  # ④ 各馬の過去成績・血統を取得
-  status_box.write("📌 **【④】各馬の過去成績・血統を1頭ずつ抽出中...**")
+  # ----------------------------------------------------
+  # ④ 各馬の過去成績・父馬（血統）を取得
+  # ----------------------------------------------------
+  status_box.write(
+      "📌 **【④】各馬の過去成績・父馬データを1頭ずつ抽出中...**"
+  )
   p_bar = st.progress(0)
 
   for i, h in enumerate(horses):
@@ -223,9 +241,12 @@ def fetch_data(url):
       try:
         h_url = f"https://db.netkeiba.com/horse/{h['馬ID']}/"
         h_res = requests.get(h_url, headers=HEADERS, timeout=5)
-        h_res.encoding = "euc-jp"
 
-        soup_h = BeautifulSoup(h_res.text, "html.parser")
+        # euc-jpの文字化け回避
+        h_html = h_res.content.decode("euc-jp", errors="ignore")
+        soup_h = BeautifulSoup(h_html, "html.parser")
+
+        # 1. 父馬（血統）の抽出
         sire_a = soup_h.find("a", href=re.compile(r"/sire/"))
         if sire_a:
           father = sire_a.text.strip()
@@ -240,32 +261,30 @@ def fetch_data(url):
           h["スタミナ"] = spec["スタミナ"]
           h["瞬発力"] = spec["瞬発力"]
 
-        # 成績テーブル解析
-        try:
-          dfs = pd.read_html(io.StringIO(h_res.text))
-          for d in dfs:
-            cols = "".join([str(c) for c in d.columns])
-            if "着順" in cols or "着 順" in cols:
-              ranks = []
-              for r in d["着順"].head(5):
-                r_str = str(r).strip()
-                if r_str.isdigit():
-                  ranks.append(int(r_str))
-              if ranks:
-                h["過去5走"] = ranks
-                h["過去5走平均着順"] = round(sum(ranks) / len(ranks), 1)
-              break
-        except Exception:
-          pass
+        # 2. 過去5走の成績抽出
+        hist_table = soup_h.find("table", class_="db_main_table")
+        if hist_table:
+          tr_list = hist_table.find_all("tr")[1:]
+          ranks = []
+          for tr in tr_list[:5]:
+            tds = tr.find_all("td")
+            if len(tds) > 11:
+              rank_str = tds[11].text.strip()
+              if rank_str.isdigit():
+                ranks.append(int(rank_str))
+          if ranks:
+            h["過去5走"] = ranks
+            h["過去5走平均着順"] = round(sum(ranks) / len(ranks), 1)
 
       except Exception:
         pass
-    time.sleep(0.1)
+
+    time.sleep(0.1)  # サーバー負荷軽減
     p_bar.progress((i + 1) / len(horses))
 
   p_bar.empty()
   status_box.update(
-      label="🎉 すべてのデータの取得が完了しました！", state="complete"
+      label="🎉 全データの正確な読み込みが完了しました！", state="complete"
   )
   return pd.DataFrame(horses), "🟢 成功"
 

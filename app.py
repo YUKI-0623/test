@@ -371,8 +371,9 @@ def run_ai_prediction_and_display(api_key, df_data, track_cond, pace_cond):
 """
 
   try:
+    # 最新モデル gemini-1.5-flash に変更（404エラー回避のため）
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-1.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json", temperature=0.2

@@ -1,8 +1,5 @@
 streamlit
+google-genai
 pandas
 requests
 beautifulsoup4
-lxml
-html5lib
-numpy
-

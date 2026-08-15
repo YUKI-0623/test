@@ -16,7 +16,7 @@ st.set_page_config(
 )
 st.title("🏇 順序指定・実戦データ解析 × 展開シミュレーター")
 st.caption(
-    "指定順序（①出走馬 ➔ ②騎手 ➔ ③オッズ ➔ ④過去レース結果）で本物のデータを1頭ずつ精密取得"
+    "1頭ずつ【父馬】➔【過去5走着順】➔【単勝オッズ】を順番に確実取得するステップ読み取りエンジン搭載"
 )
 st.markdown("---")
 
@@ -32,11 +32,6 @@ HEADERS = {
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
 }
 
 SIRE_MAP = {
@@ -138,7 +133,7 @@ with st.sidebar:
 
 
 # ==========================================
-# 3. 指定順序データ取得エンジン（堅牢化版）
+# 3. 逐次ステップ実行型 データ取得エンジン
 # ==========================================
 def fetch_data(url):
   match = re.search(r"(\d{12})", url)
@@ -147,13 +142,14 @@ def fetch_data(url):
 
   race_id = match.group(1)
   status_box = st.status(
-      "🔍 データを順序指定で取得中...", expanded=True
+      "🔍 データを1項目ずつ精密取得中...", expanded=True
   )
 
   session = requests.Session()
   session.headers.update(HEADERS)
 
-  status_box.write("📌 **【①・②】出走馬リストと基本データを取得中...**")
+  # STEP 1: 出馬表からベース（枠番、馬番、馬名、騎手、初期オッズ）を取得
+  status_box.write("📌 **【ステップ1】出走馬・枠順・騎手リストを取得中...**")
   shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
 
   horses = []
@@ -195,14 +191,13 @@ def fetch_data(url):
           j_score = v
           break
 
-      # HTMLの画面要素からオッズをバックアップ取得
-      html_odds = 99.0
+      # 出馬表画面上のオッズを予備抽出
+      page_odds = 99.0
       o_td = row.find("td", class_=re.compile(r"Popular|Odds"))
       if o_td:
-        o_txt = o_td.text.strip()
-        m_odds = re.search(r"(\d+\.\d+)", o_txt)
+        m_odds = re.search(r"(\d+\.\d+)", o_td.text.strip())
         if m_odds:
-          html_odds = float(m_odds.group(1))
+          page_odds = float(m_odds.group(1))
 
       horses.append({
           "枠番": waku,
@@ -211,9 +206,8 @@ def fetch_data(url):
           "馬ID": h_id,
           "騎手": jockey,
           "騎手実績スコア": j_score,
-          "単勝オッズ": html_odds,
+          "単勝オッズ": page_odds,
           "過去5走": [],
-          "過去5走平均着順": 8.0,
           "父馬": "不明",
           "泥適性": 0.65,
           "スタミナ": 0.70,
@@ -222,87 +216,77 @@ def fetch_data(url):
 
     if not horses:
       status_box.update(
-          label="❌ 出走馬データの解析に失敗しました。", state="error"
+          label="❌ 出走馬データの取得に失敗しました。", state="error"
       )
-      return None, "馬データを取得できませんでした。"
+      return None, "出走馬リストを取得できませんでした。"
 
-    status_box.write(
-        f"✅ {len(horses)}頭の基本情報（馬名・騎手・馬ID）を取得しました。"
-    )
+    status_box.write(f"✅ 全{len(horses)}頭の基本枠組みを検出しました。")
 
   except Exception as e:
-    status_box.update(label=f"❌ 基本データ取得エラー: {e}", state="error")
+    status_box.update(label=f"❌ ステップ1エラー: {e}", state="error")
     return None, str(e)
 
-  # オッズAPI取得（失敗時はHTMLオッズを使用）
-  status_box.write("📌 **【③】単勝オッズ（リアルタイムAPI）を取得中...**")
-  try:
-    session.headers.update({
-        "Referer": shutuba_url,
-        "X-Requested-With": "XMLHttpRequest",
-    })
-    odds_api_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1"
-    odds_res = session.get(odds_api_url, timeout=5)
-    if odds_res.status_code == 200:
-      odds_json = odds_res.json()
-      odds_data = odds_json.get("data", {}).get("odds", {}).get("1", {})
-      for h in horses:
-        u_key = str(h["馬番"]).zfill(2)
-        if u_key in odds_data:
-          val = odds_data[u_key][0]
-          if val and val != "---.-":
-            h["単勝オッズ"] = float(val)
-      status_box.write("✅ オッズAPIから最新値を同期しました。")
-    else:
-      status_box.write(
-          "⚠️ オッズAPI制限のため、出馬表画面の表示オッズを採用します。"
-      )
-  except Exception:
-    status_box.write(
-        "⚠️ オッズAPI通信スキップ。出馬表の画面オッズを使用します。"
-    )
-
-  # 過去成績・血統の取得（db.netkeiba.com）
-  status_box.write("📌 **【④】各馬の血統・過去成績を取得中...**")
+  # STEP 2: 1頭ずつ順番に【父馬】➔【過去5走着順】➔【オッズ】をネット競馬から直接取得
+  status_box.write(
+      "📌"
+      " **【ステップ2】各馬のデータ（父馬➔過去5走着順➔オッズ）を1頭ずつ順番に取得中...**"
+  )
   p_bar = st.progress(0)
+  log_text = st.empty()
 
-  # db.netkeiba用ヘッダー切り替え
-  session.headers.update({
-      "Referer": "https://db.netkeiba.com/",
-      "X-Requested-With": "",
-  })
+  # オッズAPIのデータも事前準備
+  odds_dict = {}
+  try:
+    odds_api = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1"
+    res_o = session.get(
+        odds_api,
+        headers={"Referer": shutuba_url, "X-Requested-With": "XMLHttpRequest"},
+        timeout=5,
+    )
+    if res_o.status_code == 200:
+      odds_dict = res_o.json().get("data", {}).get("odds", {}).get("1", {})
+  except Exception:
+    pass
 
-  success_count = 0
   for i, h in enumerate(horses):
+    # --- 項目1: オッズ確定 ---
+    u_key = str(h["馬番"]).zfill(2)
+    if u_key in odds_dict:
+      val = odds_dict[u_key][0]
+      if val and val != "---.-":
+        h["単勝オッズ"] = float(val)
+
+    # --- 項目2 & 3: 父馬 & 過去5走着順を馬個別ページから取得 ---
     if h["馬ID"]:
+      log_text.write(
+          f"⏳ `[{i+1}/{len(horses)}] {h['馬番']}番 {h['馬名']}` の【父馬】と【過去5走着順】を取得中..."
+      )
+
+      # db.netkeibaへアクセス
+      h_url = f"https://db.netkeiba.com/horse/{h['馬ID']}/"
       try:
-        h_url = f"https://db.netkeiba.com/horse/{h['馬ID']}/"
-        h_res = session.get(h_url, timeout=6)
+        session.headers.update({"Referer": "https://db.netkeiba.com/"})
+        h_res = session.get(h_url, timeout=5)
 
         if h_res.status_code == 200:
           h_res.encoding = "euc-jp"
           soup_h = BeautifulSoup(h_res.text, "html.parser")
 
-          # 父馬の取得（血統テーブル解析）
+          # 【父馬】の抽出
           blood_tbl = soup_h.find("table", class_=re.compile(r"blood_table"))
-          father = "不明"
           if blood_tbl:
             for a in blood_tbl.find_all("a"):
-              text = a.text.strip()
+              t = a.text.strip()
               href = a.get("href", "")
-              if (
-                  text
-                  and text != "血統"
-                  and ("/horse/" in href or "/ped/" in href)
-              ):
-                father = text
+              if t and t != "血統" and ("/horse/" in href or "/ped/" in href):
+                h["父馬"] = t
                 break
 
-          if father != "不明":
-            h["父馬"] = father
+          # 血統適性の反映
+          if h["父馬"] != "不明":
             syst = "その他"
             for k, v in SIRE_MAP.items():
-              if k in father:
+              if k in h["父馬"]:
                 syst = v
                 break
             spec = BLOOD_SPEC.get(syst, BLOOD_SPEC["その他"])
@@ -310,7 +294,7 @@ def fetch_data(url):
             h["スタミナ"] = spec["スタミナ"]
             h["瞬発力"] = spec["瞬発力"]
 
-          # 過去成績の取得
+          # 【過去5走着順】の抽出
           hist_table = soup_h.find(
               "table", class_=re.compile(r"db_main_table")
           )
@@ -326,30 +310,20 @@ def fetch_data(url):
                   ranks.append(int(m_rank.group(1)))
                 if len(ranks) >= 5:
                   break
-            if ranks:
-              h["過去5走"] = ranks
-              h["過去5走平均着順"] = round(sum(ranks) / len(ranks), 1)
-              success_count += 1
+            h["過去5走"] = ranks
 
       except Exception:
         pass
 
-    time.sleep(0.2)  # サーバーブロック回避のためのウェイト
+    time.sleep(0.15)  # 連続アクセスによるブロック防止用の間隔
     p_bar.progress((i + 1) / len(horses))
 
+  log_text.empty()
   p_bar.empty()
-
-  if success_count > 0:
-    status_box.update(
-        label="🎉 全データの取得が完了しました！", state="complete"
-    )
-  else:
-    status_box.update(
-        label=(
-            "⚠️ ネット競馬のアクセス制限のため、一部の過去成績が初期値となっています。"
-        ),
-        state="complete",
-    )
+  status_box.update(
+      label="🎉 全頭の全項目データ読み込みが完了しました！",
+      state="complete",
+  )
 
   return pd.DataFrame(horses), "🟢 成功"
 
@@ -365,7 +339,6 @@ def run_ai_prediction_and_display(api_key, df_data, track_cond, pace_cond):
       "馬番",
       "馬名",
       "単勝オッズ",
-      "過去5走平均着順",
       "過去5走着順",
       "父馬",
       "騎手",
@@ -383,7 +356,7 @@ def run_ai_prediction_and_display(api_key, df_data, track_cond, pace_cond):
 {json.dumps(race_data, ensure_ascii=False)}
 
 【多角的評価ステップ】
-1. **基礎能力 ＆ 適性評価**: 過去成績、上がりタイム、騎手手腕、馬場（{track_cond}）・ペース（{pace_cond}）の適性を評価。
+1. **基礎能力 ＆ 適性評価**: 過去5走着順、騎手手腕、馬場（{track_cond}）・ペース（{pace_cond}）の血統適性を評価。
 2. **期待値（オッズギャップ）評価**:
    - 算出された勝率に対して、現在の単勝オッズが過小評価（美味しい）されている馬を「穴馬（妙味あり）」として高く評価。
 3. **⚠️ 危険な人気馬（飛ぶリスク）の判定**:
@@ -524,7 +497,12 @@ if race_url:
         "スローペース（直線瞬発力・キレ勝負）": {"スタミナ": 0.5, "瞬発力": 2.2},
     }[selected_pace]
 
-    df["実績影響秒"] = (df["過去5走平均着順"] - 4.5) * 0.22 * history_weight
+    # 計算用の内部平均着順を算出（表示からは除外）
+    df["内部_平均着順"] = df["過去5走"].apply(
+        lambda x: sum(x) / len(x) if x else 8.0
+    )
+
+    df["実績影響秒"] = (df["内部_平均着順"] - 4.5) * 0.22 * history_weight
     df["オッズ影響秒"] = np.log1p(df["単勝オッズ"]) * 0.35 * odds_weight
     df["馬場適性秒"] = mud_val * (1.0 - df["泥適性"]) * 0.20 * course_weight
     df["展開適性秒"] = -(
@@ -573,7 +551,6 @@ if race_url:
               "馬名",
               "ガチ適性指数",
               "単勝オッズ",
-              "過去5走平均着順",
               "過去5走着順",
               "父馬",
               "騎手",

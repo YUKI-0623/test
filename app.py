@@ -25,11 +25,13 @@ st.markdown("---")
 # ==========================================
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148"
-        " Safari/604.1"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+        " like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept-Language": "ja-JP,ja;q=0.9",
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
 }
 
 SIRE_MAP = {
@@ -134,7 +136,7 @@ with st.sidebar:
 # 3. 指定順序データ取得エンジン
 # ==========================================
 def fetch_data(url):
-  match = re.search(r"race_id=(\d{12})", url)
+  match = re.search(r"(\d{12})", url)
   if not match:
     return None, "⚠️ URLに12桁のレースIDが含まれていません。"
 
@@ -150,41 +152,36 @@ def fetch_data(url):
 
   status_box.write("📌 **【①・②】出走馬リストと騎手データを取得中...**")
   shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+
+  horses = []
   try:
-    res = requests.get(shutuba_url, headers=headers, timeout=8)
+    res = requests.get(shutuba_url, headers=headers, timeout=10)
     res.encoding = "utf-8"
     soup = BeautifulSoup(res.text, "html.parser")
-    rows = soup.find_all("tr", class_="HorseList")
 
+    rows = soup.find_all("tr", class_=re.compile(r"HorseList"))
     if not rows:
-      status_box.update(
-          label="❌ 出馬表が見つかりませんでした。", state="error"
-      )
-      return None, "出馬表が見つかりませんでした。"
+      rows = soup.select("table.Shutuba_Table tr, table.RaceTable tr")
 
-    horses = []
     for idx, row in enumerate(rows):
+      # 馬名と10桁の馬IDが取得できるaタグを厳密指定（ダミー行排除）
+      a_horse = row.find("a", href=re.compile(r"/horse/(\d{10})"))
+      if not a_horse:
+        continue
+
+      name = a_horse.text.strip()
+      m_hid = re.search(r"/horse/(\d{10})", a_horse["href"])
+      h_id = m_hid.group(1) if m_hid else ""
+
       u_td = row.find("td", class_=re.compile(r"Umaban"))
       umaban = (
           int(u_td.text.strip())
           if u_td and u_td.text.strip().isdigit()
-          else idx + 1
+          else len(horses) + 1
       )
       waku = (umaban - 1) // 2 + 1
       if waku > 8:
         waku = 8
-
-      h_td = row.find("td", class_=re.compile(r"HorseInfo"))
-      name = "不明"
-      h_id = ""
-      if h_td:
-        a_tag = h_td.find("a")
-        if a_tag:
-          name = a_tag.text.strip()
-          href_str = a_tag.get("href", "")
-          m = re.search(r"(\d{10})", href_str)
-          if m:
-            h_id = m.group(1)
 
       j_td = row.find("td", class_=re.compile(r"Jockey"))
       jockey = (
@@ -213,6 +210,22 @@ def fetch_data(url):
           "スタミナ": 0.70,
           "瞬発力": 0.70,
       })
+
+    if not horses:
+      status_box.update(
+          label=(
+              "❌ 出走馬データの解析に失敗しました。"
+              " URLが正しいか確認してください。"
+          ),
+          state="error",
+      )
+      return (
+          None,
+          (
+              "馬データを取得できませんでした。"
+              " URLを確認するか時間を置い再試行してください。"
+          ),
+      )
 
     status_box.write(
         f"✅ {len(horses)}頭の基本情報（馬名・騎手・馬ID）を正常に取得しました。"
@@ -248,18 +261,18 @@ def fetch_data(url):
     if h["馬ID"]:
       try:
         h_url = f"https://db.netkeiba.com/horse/{h['馬ID']}/"
-        h_res = requests.get(h_url, headers=HEADERS, timeout=5)
+        h_res = requests.get(h_url, headers=headers, timeout=5)
         h_res.encoding = "euc-jp"
         soup_h = BeautifulSoup(h_res.text, "html.parser")
 
-        # 父馬の判定ロジック修正（「血統」というヘッダー文字を除外）
+        # 父馬の取得（「血統」ヘッダーの除外処理）
         blood_tbl = soup_h.find("table", class_=re.compile(r"blood_table"))
         father = "不明"
         if blood_tbl:
-          a_tags = blood_tbl.find_all("a")
-          for a in a_tags:
+          for a in blood_tbl.find_all("a"):
             text = a.text.strip()
-            if text and text != "血統" and "ped" in a.get("href", ""):
+            href = a.get("href", "")
+            if text and text != "血統" and ("/horse/" in href or "ped" in href):
               father = text
               break
 
@@ -275,6 +288,7 @@ def fetch_data(url):
           h["スタミナ"] = spec["スタミナ"]
           h["瞬発力"] = spec["瞬発力"]
 
+        # 過去5走着順の取得
         hist_table = soup_h.find("table", class_=re.compile(r"db_main_table"))
         if hist_table:
           tr_list = hist_table.find_all("tr")[1:]
@@ -295,7 +309,7 @@ def fetch_data(url):
       except Exception:
         pass
 
-    time.sleep(0.2)
+    time.sleep(0.15)
     p_bar.progress((i + 1) / len(horses))
 
   p_bar.empty()

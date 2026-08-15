@@ -1,6 +1,10 @@
 import io
+import json
+import os
 import re
 import time
+from google import genai
+from google.genai import types
 import numpy as np
 import pandas as pd
 import requests
@@ -90,6 +94,15 @@ with st.sidebar:
       value="https://race.netkeiba.com/race/shutuba.html?race_id=202605030211",
   )
 
+  st.header("🔑 AI設定")
+  default_api_key = st.secrets.get("GEMINI_API_KEY", "")
+  gemini_api_key = st.text_input(
+      "Gemini API Key",
+      value=default_api_key,
+      type="password",
+      help="Google AI Studioで取得したAPIキーを入力してください",
+  )
+
   st.header("🛠 1. 馬場と展開の設定")
   track_condition = st.select_slider(
       "馬場状態を選択",
@@ -129,14 +142,11 @@ def fetch_data(url):
       "🔍 データを順序指定で取得中...", expanded=True
   )
 
-  # ----------------------------------------------------
-  # ①・② 出走馬と騎手の取得（出馬表は UTF-8 で処理）
-  # ----------------------------------------------------
   status_box.write("📌 **【①・②】出走馬リストと騎手データを取得中...**")
   shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
   try:
     res = requests.get(shutuba_url, headers=HEADERS, timeout=8)
-    res.encoding = "utf-8"  # race.netkeiba.com は UTF-8
+    res.encoding = "utf-8"
     soup = BeautifulSoup(res.text, "html.parser")
     rows = soup.find_all("tr", class_="HorseList")
 
@@ -158,19 +168,18 @@ def fetch_data(url):
       if waku > 8:
         waku = 8
 
-      # 馬名と馬ID
       h_td = row.find("td", class_=re.compile(r"HorseInfo"))
       name = "不明"
       h_id = ""
       if h_td:
-        a_tag = h_td.find("a", href=re.compile(r"/horse/"))
+        a_tag = h_td.find("a")
         if a_tag:
           name = a_tag.text.strip()
-          m = re.search(r"/horse/(\d+)", a_tag["href"])
+          href_str = a_tag.get("href", "")
+          m = re.search(r"(\d{10})", href_str)
           if m:
             h_id = m.group(1)
 
-      # 騎手名
       j_td = row.find("td", class_=re.compile(r"Jockey"))
       jockey = (
           re.sub(r"[\d▲△☆★◇◇\s\n\r]", "", j_td.text.strip())
@@ -200,15 +209,12 @@ def fetch_data(url):
       })
 
     status_box.write(
-        f"✅ {len(horses)}頭の基本情報（馬名・騎手）を正常に取得しました。"
+        f"✅ {len(horses)}頭の基本情報（馬名・騎手・馬ID）を正常に取得しました。"
     )
   except Exception as e:
     status_box.update(label=f"❌ ①・②でエラー: {e}", state="error")
     return None, str(e)
 
-  # ----------------------------------------------------
-  # ③ 単勝オッズの取得 (API経由)
-  # ----------------------------------------------------
   status_box.write("📌 **【③】単勝オッズ（実値）を取得中...**")
   try:
     odds_api_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1"
@@ -227,9 +233,6 @@ def fetch_data(url):
   except Exception as e:
     status_box.write(f"⚠️ オッズ取得注意: {e}")
 
-  # ----------------------------------------------------
-  # ④ 各馬の過去成績・父馬（血統）を取得（DBは EUC-JP で処理）
-  # ----------------------------------------------------
   status_box.write(
       "📌 **【④】各馬の過去成績・父馬データを1頭ずつ抽出中...**"
   )
@@ -240,37 +243,46 @@ def fetch_data(url):
       try:
         h_url = f"https://db.netkeiba.com/horse/{h['馬ID']}/"
         h_res = requests.get(h_url, headers=HEADERS, timeout=5)
-        h_res.encoding = "euc-jp"  # db.netkeiba.com は EUC-JP
+        h_res.encoding = "euc-jp"
         soup_h = BeautifulSoup(h_res.text, "html.parser")
 
-        # 1. 父馬（血統）の抽出
-        prof_tbl = soup_h.find("table", class_="prof_table")
-        if prof_tbl:
-          sire_a = prof_tbl.find("a", href=re.compile(r"/horse/ped/"))
+        blood_tbl = soup_h.find("table", class_=re.compile(r"blood_table"))
+        father = "不明"
+        if blood_tbl:
+          sire_a = blood_tbl.find("a")
           if sire_a:
             father = sire_a.text.strip()
-            h["父馬"] = father
-            syst = "その他"
-            for k, v in SIRE_MAP.items():
-              if k in father:
-                syst = v
-                break
-            spec = BLOOD_SPEC.get(syst, BLOOD_SPEC["その他"])
-            h["泥適性"] = spec["泥適性"]
-            h["スタミナ"] = spec["スタミナ"]
-            h["瞬発力"] = spec["瞬発力"]
 
-        # 2. 過去5走の成績抽出
-        hist_table = soup_h.find("table", class_="db_main_table")
+        if father == "不明":
+          sire_a = soup_h.find("a", href=re.compile(r"/horse/ped/|/sire/"))
+          if sire_a:
+            father = sire_a.text.strip()
+
+        if father != "不明":
+          h["父馬"] = father
+          syst = "その他"
+          for k, v in SIRE_MAP.items():
+            if k in father:
+              syst = v
+              break
+          spec = BLOOD_SPEC.get(syst, BLOOD_SPEC["その他"])
+          h["泥適性"] = spec["泥適性"]
+          h["スタミナ"] = spec["スタミナ"]
+          h["瞬発力"] = spec["瞬発力"]
+
+        hist_table = soup_h.find("table", class_=re.compile(r"db_main_table"))
         if hist_table:
           tr_list = hist_table.find_all("tr")[1:]
           ranks = []
-          for tr in tr_list[:5]:
+          for tr in tr_list:
             tds = tr.find_all("td")
             if len(tds) > 11:
               rank_str = tds[11].text.strip()
-              if rank_str.isdigit():
-                ranks.append(int(rank_str))
+              m_rank = re.search(r"^(\d+)", rank_str)
+              if m_rank:
+                ranks.append(int(m_rank.group(1)))
+              if len(ranks) >= 5:
+                break
           if ranks:
             h["過去5走"] = ranks
             h["過去5走平均着順"] = round(sum(ranks) / len(ranks), 1)
@@ -278,7 +290,7 @@ def fetch_data(url):
       except Exception:
         pass
 
-    time.sleep(0.1)  # サーバー負荷軽減
+    time.sleep(0.1)
     p_bar.progress((i + 1) / len(horses))
 
   p_bar.empty()
@@ -289,7 +301,168 @@ def fetch_data(url):
 
 
 # ==========================================
-# 4. シミュレーション計算＆表示
+# 4. Gemini API による多角分析 ＆ 可視化関数
+# ==========================================
+def run_ai_prediction_and_display(api_key, df_data, track_cond, pace_cond):
+  client = genai.Client(api_key=api_key)
+
+  race_data = df_data[[
+      "枠番",
+      "馬番",
+      "馬名",
+      "単勝オッズ",
+      "過去5走平均着順",
+      "過去5走着順",
+      "父馬",
+      "騎手",
+  ]].to_dict(orient="records")
+
+  prompt = f"""
+あなたは競馬の回収率（期待値）向上を追求するプロのデータサイエンティストです。
+提供されたデータから、以下の【多角的評価ステップ】に従って各馬を精密に分析し、指定のJSON形式で出力してください。
+
+【レース条件】
+・馬場状態: {track_cond}
+・想定ペース: {pace_cond}
+
+【出走馬データ】
+{json.dumps(race_data, ensure_ascii=False)}
+
+【多角的評価ステップ】
+1. **基礎能力 ＆ 適性評価**: 過去成績、上がりタイム、騎手手腕、馬場（{track_cond}）・ペース（{pace_cond}）の適性を評価。
+2. **期待値（オッズギャップ）評価**:
+   - 算出された勝率に対して、現在の単勝オッズが過小評価（美味しい）されている馬を「穴馬（妙味あり）」として高く評価。
+3. **⚠️ 危険な人気馬（飛ぶリスク）の判定**:
+   - 単勝オッズ上位（1〜3番人気または単勝5.0倍以下）の馬の中で、以下の「飛ぶ要素」が2つ以上該当する場合は、過剰人気として【危険な人気馬】と認定し、AI指数・複勝率を大幅に割り引いてください。
+     ・想定ペース（{pace_cond}）や枠順と脚質が致命的に不一致
+     ・馬場状態（{track_cond}）に対して泥・血統適性が乏しい
+     ・前走が展開恵まれ（フロック）による着順で実力以上に過大評価されている
+
+【出力フォーマット（JSON形式のみ）】
+{{
+  "rankings": [
+    {{
+      "umaban": 1,
+      "name": "馬名",
+      "ai_score": 85.0,
+      "fukushou_rate": 60,
+      "mark": "◎",
+      "expected_value_type": "本命 / 妙味(穴) / 危険な人気馬 / 静観",
+      "reason": "15文字以内の簡潔な評価"
+    }}
+  ],
+  "dangerous_popular_horses": [
+    {{
+      "umaban": 3,
+      "name": "人気馬名",
+      "odds": 2.8,
+      "risk_reason": "スローペース想定で展開不向き。重馬場血統適性も低いため飛ばす危険性大。"
+    }}
+  ],
+  "pacing_analysis": "レース展開と展開利を得る馬・不利を受ける人気の短評（50文字程度）",
+  "betting_recommendation": {{
+    "honmei": "馬番 馬名",
+    "ana_horse": "馬番 馬名（オッズ妙味のある穴馬）",
+    "danger_horse": "馬番 馬名（消し推奨の危険人気馬）",
+    "ticket_type": "3連複 軸1頭流し / 馬連",
+    "combinations": "① - ②, ③, ④, ⑤"
+  }}
+}}
+"""
+
+  try:
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json", temperature=0.2
+        ),
+    )
+
+    data = json.loads(response.text)
+
+    # 1. 危険な人気馬の警告カード表示
+    danger_list = data.get("dangerous_popular_horses", [])
+    if danger_list:
+      st.error("⚠️ **【AI警告】飛ぶ可能性が高い「危険な人気馬」を検知しました**")
+      for d in danger_list:
+        st.markdown(
+            f"・**{d.get('umaban')}番 {d.get('name')}**（単勝"
+            f" {d.get('odds')}倍）: {d.get('risk_reason')}"
+        )
+
+    # 2. 要点カード表示
+    bet_info = data.get("betting_recommendation", {})
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+      st.metric(label="🎯 AI本命馬（◎）", value=bet_info.get("honmei", "なし"))
+    with col2:
+      st.metric(
+          label="⭐ 期待の穴馬", value=bet_info.get("ana_horse", "なし")
+      )
+    with col3:
+      st.metric(
+          label="⚠️ 危険な人気馬", value=bet_info.get("danger_horse", "なし")
+      )
+    with col4:
+      st.metric(label="🎫 推奨券種", value=bet_info.get("ticket_type", "なし"))
+
+    st.info(f"💡 **AI展開診断**: {data.get('pacing_analysis', '')}")
+
+    # 3. グラフとテーブルの可視化
+    rank_df = pd.DataFrame(data.get("rankings", []))
+    if not rank_df.empty:
+      rank_df = rank_df.rename(
+          columns={
+              "mark": "印",
+              "umaban": "馬番",
+              "name": "馬名",
+              "ai_score": "AI指数",
+              "fukushou_rate": "推定制勝率(%)",
+              "expected_value_type": "タイプ",
+              "reason": "AI評価ポイント",
+          }
+      )
+
+      c_graph, c_table = st.columns([1, 1.3])
+      with c_graph:
+        st.markdown("##### 📈 馬別 AI適性指数")
+        st.bar_chart(rank_df.set_index("馬名")["AI指数"], color="#FF4B4B")
+
+      with c_table:
+        st.markdown("##### 🏆 AI多角分析データテーブル")
+        st.dataframe(
+            rank_df[[
+                "印",
+                "馬番",
+                "馬名",
+                "AI指数",
+                "推定制勝率(%)",
+                "タイプ",
+                "AI評価ポイント",
+            ]],
+            column_config={
+                "AI指数": st.column_config.ProgressColumn(
+                    "AI指数",
+                    help="100点満点評価",
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f",
+                ),
+                "推定制勝率(%)": st.column_config.NumberColumn(
+                    "複勝率", format="%.0f%%"
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
+
+  except Exception as e:
+    st.error(f"AI分析中にエラーが発生しました: {e}")
+
+
+# ==========================================
+# 5. メインシミュレーション計算＆画面表示
 # ==========================================
 if race_url:
   df, msg = fetch_data(race_url)
@@ -356,5 +529,22 @@ if race_url:
               "予想タイム",
           ]]
       )
+
+    # ─── 🤖 AI多角分析セクション ───
+    st.markdown("---")
+    st.subheader("🤖 AI多角分析 ＆ 危険な人気馬判定")
+
+    if not gemini_api_key:
+      st.info(
+          "💡 サイドバーの「Gemini API"
+          " Key」を入力すると、AI多角分析と危険な人気馬の判定が有効になります。"
+      )
+    else:
+      if st.button("🔥 Gemini AIで多角分析・危険な人気馬を判定する"):
+        with st.spinner("AIが展開・期待値・危険な人気馬を分析中..."):
+          run_ai_prediction_and_display(
+              gemini_api_key, result, track_condition, selected_pace
+          )
+
   else:
     st.error(msg)

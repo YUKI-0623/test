@@ -87,9 +87,11 @@ JOCKEY_MAP = {
 # ==========================================
 with st.sidebar:
   st.header("🔗 レースURL入力")
+  # 初期値を空にして起動時のフリーズを防止
   race_url = st.text_input(
       "ネット競馬の出馬表URL",
-      value="https://race.netkeiba.com/race/shutuba.html?race_id=202605030211",
+      value="",
+      placeholder="https://race.netkeiba.com/race/shutuba.html?race_id=...",
   )
 
   st.header("🔑 AI設定")
@@ -542,3 +544,7 @@ if race_url:
 
   else:
     st.error(msg)
+else:
+  st.info(
+      "👈 左側のサイドバーにネット競馬の出馬表URLをペーストすると、自動でデータ解析が始まります！"
+  )

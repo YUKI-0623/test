@@ -25,9 +25,11 @@ st.markdown("---")
 # ==========================================
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-        " like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148"
+        " Safari/604.1"
+    ),
+    "Accept-Language": "ja-JP,ja;q=0.9",
 }
 
 SIRE_MAP = {
@@ -87,7 +89,6 @@ JOCKEY_MAP = {
 # ==========================================
 with st.sidebar:
   st.header("🔗 レースURL入力")
-  # 初期値を空にして起動時のフリーズを防止
   race_url = st.text_input(
       "ネット競馬の出馬表URL",
       value="",
@@ -142,10 +143,15 @@ def fetch_data(url):
       "🔍 データを順序指定で取得中...", expanded=True
   )
 
+  headers = HEADERS.copy()
+  headers["Referer"] = (
+      f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+  )
+
   status_box.write("📌 **【①・②】出走馬リストと騎手データを取得中...**")
   shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
   try:
-    res = requests.get(shutuba_url, headers=HEADERS, timeout=8)
+    res = requests.get(shutuba_url, headers=headers, timeout=8)
     res.encoding = "utf-8"
     soup = BeautifulSoup(res.text, "html.parser")
     rows = soup.find_all("tr", class_="HorseList")
@@ -218,7 +224,7 @@ def fetch_data(url):
   status_box.write("📌 **【③】単勝オッズ（実値）を取得中...**")
   try:
     odds_api_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1"
-    odds_res = requests.get(odds_api_url, headers=HEADERS, timeout=6)
+    odds_res = requests.get(odds_api_url, headers=headers, timeout=6)
     if odds_res.status_code == 200:
       odds_data = (
           odds_res.json().get("data", {}).get("odds", {}).get("1", {})
@@ -246,17 +252,16 @@ def fetch_data(url):
         h_res.encoding = "euc-jp"
         soup_h = BeautifulSoup(h_res.text, "html.parser")
 
+        # 父馬の判定ロジック修正（「血統」というヘッダー文字を除外）
         blood_tbl = soup_h.find("table", class_=re.compile(r"blood_table"))
         father = "不明"
         if blood_tbl:
-          sire_a = blood_tbl.find("a")
-          if sire_a:
-            father = sire_a.text.strip()
-
-        if father == "不明":
-          sire_a = soup_h.find("a", href=re.compile(r"/horse/ped/|/sire/"))
-          if sire_a:
-            father = sire_a.text.strip()
+          a_tags = blood_tbl.find_all("a")
+          for a in a_tags:
+            text = a.text.strip()
+            if text and text != "血統" and "ped" in a.get("href", ""):
+              father = text
+              break
 
         if father != "不明":
           h["父馬"] = father
@@ -290,7 +295,7 @@ def fetch_data(url):
       except Exception:
         pass
 
-    time.sleep(0.1)
+    time.sleep(0.2)
     p_bar.progress((i + 1) / len(horses))
 
   p_bar.empty()

@@ -1,6 +1,5 @@
 import json
 import re
-import time
 from google import genai
 from google.genai import types
 import numpy as np
@@ -11,12 +10,12 @@ import streamlit as st
 
 # 画面全体の基本設定
 st.set_page_config(
-    page_title="順序指定・実戦データ解析 🏇 展開シミュレーター",
+    page_title="スマホ最適化 🏇 競馬展開シミュレーター",
     layout="wide",
 )
-st.title("🏇 順序指定・実戦データ解析 × 展開シミュレーター")
+st.title("🏇 競馬展開シミュレーター")
 st.caption(
-    "1頭ずつ【父馬】➔【過去5走着順】➔【単勝オッズ】を順番に確実取得するステップ読み取りエンジン搭載"
+    "📱 スマホ対応：URLを入れるだけで【単勝オッズ・父馬・過去5走着順・騎手】を一発自動取得"
 )
 st.markdown("---")
 
@@ -25,13 +24,14 @@ st.markdown("---")
 # ==========================================
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-        " like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X)"
+        " AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6"
+        " Mobile/15E148 Safari/604.1"
     ),
     "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     ),
-    "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+    "Accept-Language": "ja-JP,ja;q=0.9",
 }
 
 SIRE_MAP = {
@@ -133,34 +133,32 @@ with st.sidebar:
 
 
 # ==========================================
-# 3. 逐次ステップ実行型 データ取得エンジン
+# 3. 超高速一発解析 データ取得エンジン
 # ==========================================
-def fetch_data(url):
+def fetch_data_direct(url):
   match = re.search(r"(\d{12})", url)
   if not match:
     return None, "⚠️ URLに12桁のレースIDが含まれていません。"
 
   race_id = match.group(1)
-  status_box = st.status(
-      "🔍 データを1項目ずつ精密取得中...", expanded=True
-  )
-
-  session = requests.Session()
-  session.headers.update(HEADERS)
-
-  # STEP 1: 出馬表からベース（枠番、馬番、馬名、騎手、初期オッズ）を取得
-  status_box.write("📌 **【ステップ1】出走馬・枠順・騎手リストを取得中...**")
   shutuba_url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
 
-  horses = []
+  status_box = st.status(
+      "⚡ ネット競馬から出馬表を一括高速解析中...", expanded=True
+  )
+
   try:
-    res = session.get(shutuba_url, timeout=10)
+    res = requests.get(shutuba_url, headers=HEADERS, timeout=10)
     res.encoding = "utf-8"
     soup = BeautifulSoup(res.text, "html.parser")
 
     rows = soup.find_all("tr", class_=re.compile(r"HorseList"))
+    if not rows:
+      rows = soup.select("table.Shutuba_Table tr, table.RaceTable tr")
 
+    horses = []
     for idx, row in enumerate(rows):
+      # 馬名と馬ID
       a_horse = row.find("a", href=re.compile(r"/horse/(\d{10})"))
       if not a_horse:
         continue
@@ -169,16 +167,25 @@ def fetch_data(url):
       m_hid = re.search(r"/horse/(\d{10})", a_horse["href"])
       h_id = m_hid.group(1) if m_hid else ""
 
+      # 枠番
+      waku_td = row.find("td", class_=re.compile(r"Waku"))
+      waku = 1
+      if waku_td:
+        m_waku = re.search(r"waku(\d)", str(waku_td), re.IGNORECASE)
+        if m_waku:
+          waku = int(m_waku.group(1))
+
+      # 馬番
       u_td = row.find("td", class_=re.compile(r"Umaban"))
       umaban = (
           int(u_td.text.strip())
           if u_td and u_td.text.strip().isdigit()
           else len(horses) + 1
       )
-      waku = (umaban - 1) // 2 + 1
-      if waku > 8:
-        waku = 8
+      if not waku_td:
+        waku = (umaban - 1) // 2 + 1 if umaban <= 16 else 8
 
+      # 騎手
       j_td = row.find("td", class_=re.compile(r"Jockey"))
       jockey = (
           re.sub(r"[\d▲△☆★◇◇\s\n\r]", "", j_td.text.strip())
@@ -191,13 +198,55 @@ def fetch_data(url):
           j_score = v
           break
 
-      # 出馬表画面上のオッズを予備抽出
-      page_odds = 99.0
+      # 単勝オッズ
+      odds = 99.0
       o_td = row.find("td", class_=re.compile(r"Popular|Odds"))
       if o_td:
-        m_odds = re.search(r"(\d+\.\d+)", o_td.text.strip())
+        o_txt = o_td.text.strip()
+        m_odds = re.search(r"(\d+\.\d+)", o_txt)
         if m_odds:
-          page_odds = float(m_odds.group(1))
+          odds = float(m_odds.group(1))
+
+      # 父馬（出馬表の馬詳細・血統欄から一発解析）
+      father = "不明"
+      sire_td = row.find("td", class_=re.compile(r"Blood|Ped"))
+      if sire_td:
+        father = sire_td.text.strip().split("\n")[0]
+      else:
+        # 詳細枠内の血統文字検索
+        detail_div = row.find("div", class_=re.compile(r"Horse_Info|Detail"))
+        if detail_div:
+          lines = [
+              line.strip()
+              for line in detail_div.text.split("\n")
+              if line.strip()
+          ]
+          if len(lines) > 1:
+            father = lines[1]
+
+      syst = "その他"
+      for k, v in SIRE_MAP.items():
+        if k in father:
+          syst = v
+          break
+      spec = BLOOD_SPEC.get(syst, BLOOD_SPEC["その他"])
+
+      # 過去5走着順（出馬表のPast枠から数字のみを直接高速抽出）
+      ranks = []
+      past_tds = row.find_all("td", class_=re.compile(r"Past|Result"))
+      for ptd in past_tds:
+        # 着順を示す数字（例: "1", "3", "12"）を検出
+        rank_span = ptd.find(class_=re.compile(r"Rank|Num"))
+        if rank_span:
+          m_r = re.search(r"^(\d+)", rank_span.text.strip())
+          if m_r:
+            ranks.append(int(m_r.group(1)))
+        else:
+          m_r = re.search(r"\b(\d{1,2})\b", ptd.text.strip())
+          if m_r and int(m_r.group(1)) <= 18:
+            ranks.append(int(m_r.group(1)))
+        if len(ranks) >= 5:
+          break
 
       horses.append({
           "枠番": waku,
@@ -206,126 +255,51 @@ def fetch_data(url):
           "馬ID": h_id,
           "騎手": jockey,
           "騎手実績スコア": j_score,
-          "単勝オッズ": page_odds,
-          "過去5走": [],
-          "父馬": "不明",
-          "泥適性": 0.65,
-          "スタミナ": 0.70,
-          "瞬発力": 0.70,
+          "単勝オッズ": odds,
+          "過去5走": ranks,
+          "父馬": father,
+          "泥適性": spec["泥適性"],
+          "スタミナ": spec["スタミナ"],
+          "瞬発力": spec["瞬発力"],
       })
 
     if not horses:
       status_box.update(
-          label="❌ 出走馬データの取得に失敗しました。", state="error"
+          label="❌ 出走馬データの解析に失敗しました。", state="error"
       )
       return None, "出走馬リストを取得できませんでした。"
 
-    status_box.write(f"✅ 全{len(horses)}頭の基本枠組みを検出しました。")
+    # オッズ補完API（画面オッズが取れていなかった場合のみ通信）
+    try:
+      odds_api_url = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1"
+      odds_res = requests.get(
+          odds_api_url,
+          headers={"Referer": shutuba_url, **HEADERS},
+          timeout=3,
+      )
+      if odds_res.status_code == 200:
+        odds_data = (
+            odds_res.json().get("data", {}).get("odds", {}).get("1", {})
+        )
+        for h in horses:
+          if h["単勝オッズ"] == 99.0:
+            u_key = str(h["馬番"]).zfill(2)
+            if u_key in odds_data:
+              val = odds_data[u_key][0]
+              if val and val != "---.-":
+                h["単勝オッズ"] = float(val)
+    except Exception:
+      pass
+
+    status_box.update(
+        label=f"🎉 全{len(horses)}頭のデータ（オッズ・父馬・過去5走）を高速取得しました！",
+        state="complete",
+    )
+    return pd.DataFrame(horses), "🟢 成功"
 
   except Exception as e:
-    status_box.update(label=f"❌ ステップ1エラー: {e}", state="error")
+    status_box.update(label=f"❌ 取得エラー: {e}", state="error")
     return None, str(e)
-
-  # STEP 2: 1頭ずつ順番に【父馬】➔【過去5走着順】➔【オッズ】をネット競馬から直接取得
-  status_box.write(
-      "📌"
-      " **【ステップ2】各馬のデータ（父馬➔過去5走着順➔オッズ）を1頭ずつ順番に取得中...**"
-  )
-  p_bar = st.progress(0)
-  log_text = st.empty()
-
-  # オッズAPIのデータも事前準備
-  odds_dict = {}
-  try:
-    odds_api = f"https://race.netkeiba.com/api/api_get_jra_odds.html?race_id={race_id}&type=1"
-    res_o = session.get(
-        odds_api,
-        headers={"Referer": shutuba_url, "X-Requested-With": "XMLHttpRequest"},
-        timeout=5,
-    )
-    if res_o.status_code == 200:
-      odds_dict = res_o.json().get("data", {}).get("odds", {}).get("1", {})
-  except Exception:
-    pass
-
-  for i, h in enumerate(horses):
-    # --- 項目1: オッズ確定 ---
-    u_key = str(h["馬番"]).zfill(2)
-    if u_key in odds_dict:
-      val = odds_dict[u_key][0]
-      if val and val != "---.-":
-        h["単勝オッズ"] = float(val)
-
-    # --- 項目2 & 3: 父馬 & 過去5走着順を馬個別ページから取得 ---
-    if h["馬ID"]:
-      log_text.write(
-          f"⏳ `[{i+1}/{len(horses)}] {h['馬番']}番 {h['馬名']}` の【父馬】と【過去5走着順】を取得中..."
-      )
-
-      # db.netkeibaへアクセス
-      h_url = f"https://db.netkeiba.com/horse/{h['馬ID']}/"
-      try:
-        session.headers.update({"Referer": "https://db.netkeiba.com/"})
-        h_res = session.get(h_url, timeout=5)
-
-        if h_res.status_code == 200:
-          h_res.encoding = "euc-jp"
-          soup_h = BeautifulSoup(h_res.text, "html.parser")
-
-          # 【父馬】の抽出
-          blood_tbl = soup_h.find("table", class_=re.compile(r"blood_table"))
-          if blood_tbl:
-            for a in blood_tbl.find_all("a"):
-              t = a.text.strip()
-              href = a.get("href", "")
-              if t and t != "血統" and ("/horse/" in href or "/ped/" in href):
-                h["父馬"] = t
-                break
-
-          # 血統適性の反映
-          if h["父馬"] != "不明":
-            syst = "その他"
-            for k, v in SIRE_MAP.items():
-              if k in h["父馬"]:
-                syst = v
-                break
-            spec = BLOOD_SPEC.get(syst, BLOOD_SPEC["その他"])
-            h["泥適性"] = spec["泥適性"]
-            h["スタミナ"] = spec["スタミナ"]
-            h["瞬発力"] = spec["瞬発力"]
-
-          # 【過去5走着順】の抽出
-          hist_table = soup_h.find(
-              "table", class_=re.compile(r"db_main_table")
-          )
-          if hist_table:
-            tr_list = hist_table.find_all("tr")[1:]
-            ranks = []
-            for tr in tr_list:
-              tds = tr.find_all("td")
-              if len(tds) > 11:
-                rank_str = tds[11].text.strip()
-                m_rank = re.search(r"^(\d+)", rank_str)
-                if m_rank:
-                  ranks.append(int(m_rank.group(1)))
-                if len(ranks) >= 5:
-                  break
-            h["過去5走"] = ranks
-
-      except Exception:
-        pass
-
-    time.sleep(0.15)  # 連続アクセスによるブロック防止用の間隔
-    p_bar.progress((i + 1) / len(horses))
-
-  log_text.empty()
-  p_bar.empty()
-  status_box.update(
-      label="🎉 全頭の全項目データ読み込みが完了しました！",
-      state="complete",
-  )
-
-  return pd.DataFrame(horses), "🟢 成功"
 
 
 # ==========================================
@@ -489,7 +463,7 @@ def run_ai_prediction_and_display(api_key, df_data, track_cond, pace_cond):
 # 5. メインシミュレーション計算＆画面表示
 # ==========================================
 if race_url:
-  df, msg = fetch_data(race_url)
+  df, msg = fetch_data_direct(race_url)
   if df is not None:
     p_info = {
         "ミドルペース（標準・総合力勝負）": {"スタミナ": 1.0, "瞬発力": 1.0},
@@ -497,7 +471,7 @@ if race_url:
         "スローペース（直線瞬発力・キレ勝負）": {"スタミナ": 0.5, "瞬発力": 2.2},
     }[selected_pace]
 
-    # 計算用の内部平均着順を算出（表示からは除外）
+    # 平均着順（内部計算用）
     df["内部_平均着順"] = df["過去5走"].apply(
         lambda x: sum(x) / len(x) if x else 8.0
     )
